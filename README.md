@@ -22,8 +22,8 @@
 
 <br>
 
-[![Developer](https://img.shields.io/badge/Developer-@MAGMAxRICH-black?style=for-the-badge&logo=github)](https://github.com/MAGMAxRICH)
-[![Telegram Support](https://img.shields.io/badge/Support-Telegram-2CA5E0?style=for-the-badge&logo=telegram)](#)
+[![Developer](https://img.shields.io/badge/Developer-@Smugllers-black?style=for-the-badge&logo=github)](https://github.com/themagmalord333-oss)
+[![Telegram Support](https://img.shields.io/badge/Support-Telegram-2CA5E0?style=for-the-badge&logo=telegram)](https://t.me/Smugllers)
 
 </div>
 
@@ -73,9 +73,9 @@ chmod +x install.sh
 
 ## 💬 Support
 
-- **GitHub:** [@MAGMAxRICH](https://github.com/MAGMAxRICH)
-- **Telegram:** [Support Channel](#) 
-- **Developer:** @MAGMAxRICH
+- **GitHub:** [themagmalord333-oss](https://github.com/themagmalord333-oss)
+- **Telegram:** [@Smugllers](https://t.me/Smugllers) 
+- **Developer:** @Smugllers
 
 <br>
 
@@ -86,5 +86,5 @@ Distributed under the MIT License.
 <br><br><br>
 
 <div align="center">
-  <p>Made with ❤️ by <b>@MAGMAxRICH</b></p>
+  <p>Made with ❤️ by <b>@Smugllers</b></p>
 </div>
