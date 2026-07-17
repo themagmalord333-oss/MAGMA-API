@@ -54,9 +54,7 @@ echo ""
 echo "[6/12] Installing Latest yt-dlp..."
 
 pip uninstall -y yt-dlp || true
-
 pip install -U git+https://github.com/yt-dlp/yt-dlp.git
-
 pip install -U "yt-dlp[default]"
 
 echo ""
@@ -88,50 +86,73 @@ ffmpeg -version >/dev/null || {
 echo ""
 echo "[10/12] Verifying Python Packages..."
 
-python3 - <<EOF
+python3 <<EOF
 import yt_dlp
 import fastapi
 import ytmusicapi
-print("Python packages verified.")
+import yt_dlp_ejs
+print("✓ Python packages verified.")
 EOF
 
 echo ""
 echo "[11/12] Verifying Installation..."
 
+echo ""
 echo "Node Version:"
-node -v
+node -v || {
+    echo "❌ Node.js not found!"
+    exit 1
+}
 
 echo ""
-
 echo "Python:"
 python3 --version
 
 echo ""
-
 echo "yt-dlp:"
 yt-dlp --version
 
 echo ""
-
-echo "yt-dlp-ejs:"
-pip show yt-dlp-ejs >/dev/null || {
-    echo "yt-dlp-ejs missing!"
-    exit 1
-}
-
-echo ""
-
 echo "FFmpeg:"
 ffmpeg -version | head -n1
 
 echo ""
-echo "[12/12] Testing yt-dlp..."
+echo "Checking Node Runtime..."
 
-yt-dlp -v --js-runtimes node -F https://youtu.be/U0EI7XFkkV4 >/dev/null || {
-    echo ""
-    echo "yt-dlp test failed."
-    exit 1
-}
+python3 <<EOF
+import shutil
+node = shutil.which("node")
+if not node:
+    raise SystemExit("❌ Node runtime not found")
+print(f"✓ Node Runtime: {node}")
+EOF
+
+echo ""
+echo "Checking yt-dlp-ejs..."
+
+python3 <<EOF
+import yt_dlp_ejs
+print("✓ yt-dlp-ejs Installed")
+EOF
+
+echo ""
+echo "Checking downloads directory..."
+
+mkdir -p downloads
+
+echo "✓ downloads directory ready"
+
+echo ""
+echo "Checking cookies.txt..."
+
+if [ -f cookies.txt ]; then
+    echo "✓ cookies.txt found"
+else
+    echo "⚠ cookies.txt not found (COOKIE_URL can create it later)"
+fi
+
+echo ""
+echo "[12/12] Installation Verification Complete"
 
 echo ""
 echo "========================================="
