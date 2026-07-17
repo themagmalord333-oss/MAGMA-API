@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+yt-dlp
+ytmusicapi
+python-dotenv
+aiofiles
+psutil
+orjson
+uvloop
+watchdog
+prometheus-client
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+redis
