@@ -135,16 +135,19 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     # 2. Proceed with yt-dlp download if no cache exists  
     opts = get_base_ydl_opts()  
     opts.update({  
-        'format': '139/140/m4a/251/bestaudio/best',  
+        # Prefer lowest quality M4A (139 is ~48kbps, 140 is ~128kbps) to minimize download time
+        'format': '139/140/m4a/bestaudio/best',  
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
-            'preferredquality': '192',  
+            # Lowering bitrate to 64 kbps reduces CPU encoding time and final file I/O, 
+            # significantly maximizing FFmpeg conversion speed over audio quality.
+            'preferredquality': '64',  
         }],
-        # Performance optimizations for audio download and processing
-        'concurrent_fragment_downloads': 5,
+        # Performance optimizations for maximum download and processing speed
+        'concurrent_fragment_downloads': 10,
         'http_chunk_size': 10485760,  # 10MB chunks to bypass potential throttling
-        'postprocessor_args': ['-threads', '0'] # Allow FFmpeg to use optimal thread count
+        'postprocessor_args': ['-threads', '0'] # Allow FFmpeg to use all available CPU cores
     })  
 
     try:  
