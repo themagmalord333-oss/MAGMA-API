@@ -50,7 +50,7 @@ def extract_video_id(url: str) -> Optional[str]:
     match = re.search(pattern, url)  
     if match:  
         return match.group(1)  
-          
+
     match = re.search(r"[0-9A-Za-z_-]{11}", url)  
     return match.group(0) if match else None
 
@@ -115,10 +115,10 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
             final_path = os.path.join(DOWNLOAD_DIR, cached_filename)  
             if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:  
                 logger.info(f"Cache hit! Returning existing audio for {video_id} without running yt-dlp")  
-                  
+
                 # Extract title from filename (removing the _videoId.mp3 part)  
                 title = cached_filename[:-len(f"_{video_id}.mp3")]  
-                  
+
                 return {  
                     "status": True,  
                     "title": title,  
@@ -135,26 +135,26 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     # 2. Proceed with yt-dlp download if no cache exists  
     opts = get_base_ydl_opts()  
     opts.update({  
-        'format': '251/bestaudio/best',  
+        'format': '139/140/m4a/251/bestaudio/best',  
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }]  
     })  
-      
+
     try:  
         with yt_dlp.YoutubeDL(opts) as ydl:  
             info = ydl.extract_info(url, download=True)  
             filename = ydl.prepare_filename(info)  
             base_path, _ = os.path.splitext(filename)  
             final_path = f"{base_path}.mp3"  
-              
+
             if not os.path.isfile(final_path) or os.path.getsize(final_path) == 0:  
                 raise RuntimeError("Downloaded file is missing or empty.")  
-              
+
             logger.info(f"Successfully downloaded audio: {final_path}")  
-              
+
             return {  
                 "status": True,  
                 "title": info.get("title", ""),  
@@ -167,7 +167,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }  
-              
+
     except yt_dlp.utils.DownloadError as e:  
         logger.error(f"yt-dlp error downloading audio for {url}: {e}")  
         raise RuntimeError(f"Download Error: {str(e)}")  
@@ -185,10 +185,10 @@ def download_video_sync(url: str) -> Dict[str, Any]:
             final_path = os.path.join(DOWNLOAD_DIR, cached_filename)  
             if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:  
                 logger.info(f"Cache hit! Returning existing video for {video_id} without running yt-dlp")  
-                  
+
                 # Extract title from filename (removing the _videoId.mp4 part)  
                 title = cached_filename[:-len(f"_{video_id}.mp4")]  
-                  
+
                 return {  
                     "status": True,  
                     "title": title,  
@@ -208,25 +208,25 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'format': 'bestvideo+bestaudio/best',  
         'merge_output_format': 'mp4'  
     })  
-      
+
     try:  
         with yt_dlp.YoutubeDL(opts) as ydl:  
             info = ydl.extract_info(url, download=True)  
             filename = ydl.prepare_filename(info)  
             base_path, _ = os.path.splitext(filename)  
-            
+
             final_path = filename
             for ext in [".mp4", ".webm", ".mkv"]:
                 test_path = f"{base_path}{ext}"
                 if os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
                     final_path = test_path
                     break
-              
+
             if not (os.path.isfile(final_path) and os.path.getsize(final_path) > 0):  
                 raise RuntimeError("Downloaded file not found or is empty.")  
-              
+
             logger.info(f"Successfully downloaded video: {final_path}")  
-              
+
             return {  
                 "status": True,  
                 "title": info.get("title", ""),  
@@ -239,7 +239,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }  
-              
+
     except yt_dlp.utils.DownloadError as e:  
         logger.error(f"yt-dlp error downloading video for {url}: {e}")  
         raise RuntimeError(f"Download Error: {str(e)}")  
@@ -272,18 +272,18 @@ async def search_youtube_music(
         logger.info(f"Received search request for query '{q}' with limit {limit}")
 
         actual_limit = min(max(1, limit), 20)  
-          
+
         def perform_search():  
             return ytmusic.search(q, filter="songs", limit=actual_limit)  
-              
+
         results = await asyncio.to_thread(perform_search)  
-          
+
         formatted_results = []  
         for r in results:  
             artists = ", ".join([a.get("name", "") for a in r.get("artists", [])])  
             thumbnails = r.get("thumbnails", [])  
             thumbnail_url = thumbnails[-1].get("url") if thumbnails else None  
-              
+
             formatted_results.append({  
                 "title": r.get("title"),  
                 "artist": artists,  
@@ -291,12 +291,12 @@ async def search_youtube_music(
                 "duration": r.get("duration"),  
                 "thumbnail": thumbnail_url  
             })  
-              
+
         logger.info(f"Successfully completed search for query '{q}', returned {len(formatted_results)} result(s)")  
-              
+
         if actual_limit == 1:  
             return formatted_results[0] if formatted_results else {}  
-              
+
         return formatted_results  
     except Exception as e:  
         logger.error(f"Search error for query '{q}': {e}")  
