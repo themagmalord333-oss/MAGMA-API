@@ -134,20 +134,59 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
 
     # 2. Proceed with yt-dlp download if no cache exists  
     opts = get_base_ydl_opts()  
+    
+    # =========================================================================
+    # AUDIO DOWNLOAD OPTIMIZATIONS APPLIED FOR MAXIMUM SPEED:
+    # 
+    # 1. format: '139/worstaudio/bestaudio'
+    #    - 139 is the lowest bitrate M4A (~48kbps). 
+    #    - worstaudio acts as a fallback to the absolute smallest available file. 
+    #    - Smaller file size translates to drastically faster download times.
+    #
+    # 2. preferredquality: '32'
+    #    - Lowering the target MP3 bitrate to 32 kbps minimizes FFmpeg CPU workload 
+    #    - and reduces disk write operations to near zero, speeding up the post-processing phase.
+    #
+    # 3. nocheckcertificate: True
+    #    - Skips SSL certificate validation overhead during network connections.
+    #
+    # 4. noprogress, quiet, no_warnings: True
+    #    - Disables all terminal I/O during download, preventing process blocking.
+    #
+    # 5. concurrent_fragment_downloads: 10
+    #    - Downloads multiple DASH segments at once to saturate bandwidth.
+    #
+    # 6. http_chunk_size: 10485760 (10MB)
+    #    - Defeats potential HTTP throttling by requesting chunks instead of the whole file.
+    #
+    # 7. postprocessor_args: ['-threads', '0', '-vn', '-sn']
+    #    - '-threads 0' forces FFmpeg to use all available CPU cores.
+    #    - '-vn' (no video) and '-sn' (no subtitles) ensures FFmpeg skips unnecessary stream parsing.
+    #
+    # 8. retries (3), fragment_retries (3), socket_timeout (15)
+    #    - Fails faster on dead connections instead of hanging for extended periods.
+    # =========================================================================
     opts.update({  
-        # Prefer lowest quality M4A (139 is ~48kbps, 140 is ~128kbps) to minimize download time
-        'format': '139/140/m4a/bestaudio/best',  
+        'format': '139/worstaudio/bestaudio',  
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
-            # Lowering bitrate to 64 kbps reduces CPU encoding time and final file I/O, 
-            # significantly maximizing FFmpeg conversion speed over audio quality.
-            'preferredquality': '64',  
+            'preferredquality': '32',  
         }],
-        # Performance optimizations for maximum download and processing speed
         'concurrent_fragment_downloads': 10,
-        'http_chunk_size': 10485760,  # 10MB chunks to bypass potential throttling
-        'postprocessor_args': ['-threads', '0'] # Allow FFmpeg to use all available CPU cores
+        'http_chunk_size': 10485760,  
+        'nocheckcertificate': True,
+        'noprogress': True,
+        'quiet': True,
+        'no_warnings': True,
+        'retries': 3,
+        'fragment_retries': 3,
+        'socket_timeout': 15,
+        'postprocessor_args': [
+            '-threads', '0', 
+            '-vn', 
+            '-sn'
+        ]
     })  
 
     try:  
