@@ -140,7 +140,11 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
-        }]  
+        }],
+        # Performance optimizations for audio download and processing
+        'concurrent_fragment_downloads': 5,
+        'http_chunk_size': 10485760,  # 10MB chunks to bypass potential throttling
+        'postprocessor_args': ['-threads', '0'] # Allow FFmpeg to use optimal thread count
     })  
 
     try:  
