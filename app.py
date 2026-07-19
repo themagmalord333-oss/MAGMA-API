@@ -20,7 +20,6 @@ DOWNLOAD_DIR = "downloads"
 COOKIES_FILE = "cookies.txt"
 COOKIE_URL = os.environ.get("COOKIE_URL")
 
-# Restore automatic cookies download from COOKIE_URL on startup
 if COOKIE_URL:
     try:
         urllib.request.urlretrieve(COOKIE_URL, COOKIES_FILE)
@@ -40,7 +39,6 @@ def sanitize_filename(filename: str) -> str:
     return sanitized.strip()
 
 def extract_video_id(url: str) -> Optional[str]:
-    """Extracts the 11-character YouTube Video ID from a given URL."""
     if not url:
         return None
     if re.match(r"^[0-9A-Za-z_-]{11}$", url):
@@ -55,13 +53,10 @@ def extract_video_id(url: str) -> Optional[str]:
     return match.group(0) if match else None
 
 def find_cached_file(video_id: str, ext: str) -> Optional[str]:
-    """Searches the downloads directory for an existing file with the given video ID and extension."""
     if not video_id:
         return None
     suffix = f"_{video_id}.{ext}"
     try:
-        # OPTIMIZATION: Used os.scandir() instead of os.listdir() for much faster disk I/O
-        # It avoids loading all filenames into memory at once and skips unnecessary stat() calls.
         with os.scandir(DOWNLOAD_DIR) as entries:
             for entry in entries:
                 if entry.name.endswith(suffix):
@@ -111,17 +106,13 @@ def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
 def download_audio_sync(url: str) -> Dict[str, Any]:
     video_id = extract_video_id(url)
 
-    # 1. Check for existing MP3 cache file directly on disk  
     if video_id:  
         cached_filename = find_cached_file(video_id, "mp3")  
         if cached_filename:  
             final_path = os.path.join(DOWNLOAD_DIR, cached_filename)  
             if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:  
                 logger.info(f"Cache hit! Returning existing audio for {video_id} without running yt-dlp")  
-
-                # Extract title from filename (removing the _videoId.mp3 part)  
                 title = cached_filename[:-len(f"_{video_id}.mp3")]  
-
                 return {  
                     "status": True,  
                     "title": title,  
@@ -135,32 +126,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
                     "filesize": os.path.getsize(final_path)  
                 }  
 
-    # 2. Proceed with yt-dlp download if no cache exists  
     opts = get_base_ydl_opts()  
-
-    # =========================================================================
-    # ADVANCED AUDIO DOWNLOAD OPTIMIZATIONS (SPEED + QUALITY):
-    # 
-    # 1. format: '140/m4a/bestaudio/best'
-    #    - Format 140 is YouTube's 128 kbps M4A stream. It provides excellent audio quality 
-    #    - but is significantly faster to download and decodes in FFmpeg much faster than WebM/Opus.
-    #
-    # 2. preferredquality: '192'
-    #    - Restored MP3 conversion quality to 192kbps to ensure NO quality loss, satisfying your requirement.
-    #
-    # 3. extractor_args: {'youtube': ['player_client=android,web']}
-    #    - CRITICAL SPEEDUP: Forces yt-dlp to use the Android player client API first. 
-    #    - This bypasses YouTube's heavy JavaScript signature decryption, saving 1 to 3 seconds of startup overhead.
-    #
-    # 4. updatetime: False & clean_infojson: False
-    #    - Eliminates unnecessary OS file-modification-time updates and internal dictionary cleaning, saving I/O and CPU.
-    #
-    # 5. postprocessor_args: ['-threads', '0', '-vn', '-sn']
-    #    - Forces FFmpeg to use all available CPU cores for the MP3 encoding to finish as fast as physically possible.
-    #    - '-vn' and '-sn' completely bypass any video/subtitle stream processing overhead.
-    #
-    # 6. Cache Directory: find_cached_file (above) now uses os.scandir() which speeds up cache checking on large directories.
-    # =========================================================================
     opts.update({  
         'format': '140/m4a/bestaudio/best',  
         'postprocessors': [{  
@@ -224,17 +190,13 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
 def download_video_sync(url: str) -> Dict[str, Any]:
     video_id = extract_video_id(url)
 
-    # 1. Check for existing MP4 cache file directly on disk  
     if video_id:  
         cached_filename = find_cached_file(video_id, "mp4")  
         if cached_filename:  
             final_path = os.path.join(DOWNLOAD_DIR, cached_filename)  
             if os.path.isfile(final_path) and os.path.getsize(final_path) > 0:  
                 logger.info(f"Cache hit! Returning existing video for {video_id} without running yt-dlp")  
-
-                # Extract title from filename (removing the _videoId.mp4 part)  
                 title = cached_filename[:-len(f"_{video_id}.mp4")]  
-
                 return {  
                     "status": True,  
                     "title": title,  
@@ -248,12 +210,14 @@ def download_video_sync(url: str) -> Dict[str, Any]:
                     "filesize": os.path.getsize(final_path)  
                 }  
 
-    # 2. Proceed with yt-dlp download if no cache exists  
     opts = get_base_ydl_opts()  
     opts.update({  
-        'format': 'bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/best',  
+        'format': 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/best',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
+        'embedthumbnail': False,
+        'concurrent_fragment_downloads': 10,
+        'http_chunk_size': 10485760,
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
             'preferedformat': 'mp4',
