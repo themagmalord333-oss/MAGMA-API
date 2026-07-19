@@ -72,7 +72,7 @@ def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any
             cur = conn.cursor()
             cur.execute("SELECT * FROM downloads WHERE video_id = ? AND file_type = ?", (video_id, file_type))
             row = cur.fetchone()
-            
+
             if row:
                 if os.path.isfile(row['file_path']) and os.path.getsize(row['file_path']) > 0:
                     return dict(row)
@@ -120,7 +120,7 @@ async def cache_cleanup_task():
         try:
             logger.info("Running advanced cache cleanup...")
             expiry_time = time.time() - (CACHE_EXPIRE_HOURS * 3600)
-            
+
             def perform_cleanup():
                 deleted_files = 0
                 db_cleaned = 0
@@ -160,10 +160,10 @@ async def cache_cleanup_task():
                 logger.info(f"Cleanup complete: Deleted {deleted_files} old files on disk, cleared {db_cleaned} orphaned DB records.")
             else:
                 logger.info("Cleanup complete: No expired files found.")
-                    
+
         except Exception as e:
             logger.error(f"Cache cleanup encountered an error (will retry next cycle): {e}")
-        
+
         # Run cleanup every hour safely
         await asyncio.sleep(3600)
 
@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting MAGMA Music API...")
     init_db()
-    
+
     if COOKIE_URL:
         try:
             urllib.request.urlretrieve(COOKIE_URL, COOKIES_FILE)
@@ -186,9 +186,9 @@ async def lifespan(app: FastAPI):
 
     # Start background cleanup loop
     cleanup_worker = asyncio.create_task(cache_cleanup_task())
-    
+
     yield # App runs here
-    
+
     # Shutdown
     logger.info("Shutting down MAGMA Music API...")
     cleanup_worker.cancel()
@@ -250,7 +250,7 @@ def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
 
 def download_audio_sync(url: str) -> Dict[str, Any]:
     video_id = extract_video_id(url)
-    
+
     if video_id:
         cached_data = get_cached_metadata(video_id, "mp3")
         if cached_data:
@@ -291,7 +291,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
 
     logger.info(f"Starting audio download for: {url}")
     opts = get_base_ydl_opts()  
-    
+
     # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
     opts.update({  
         'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
@@ -343,7 +343,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }
-            
+
             save_cached_metadata(response_data, "mp3")
             return response_data
 
@@ -373,7 +373,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
                 "uploader": "Cached",
                 "filesize": cached_data["file_size"]
             }
-            
+
         legacy_file = find_legacy_cached_file(video_id, "mp4")
         if legacy_file:
             path = os.path.join(DOWNLOAD_DIR, legacy_file)
@@ -397,10 +397,10 @@ def download_video_sync(url: str) -> Dict[str, Any]:
 
     logger.info(f"Starting video download for: {url}")
     opts = get_base_ydl_opts()  
-    
+
     # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
     opts.update({  
-        'format': f'bv*[height<={MAX_VIDEO_QUALITY}][ext=mp4]+ba[ext=m4a]/b[height<={MAX_VIDEO_QUALITY}][ext=mp4]/best',  
+        'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/best[ext=mp4][height<={MAX_VIDEO_QUALITY}]/best',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
@@ -452,7 +452,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }
-            
+
             save_cached_metadata(response_data, "mp4")
             return response_data
 
