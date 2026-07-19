@@ -400,7 +400,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
 
     # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
     opts.update({  
-        'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/best[ext=mp4][height<={MAX_VIDEO_QUALITY}]/best',  
+        'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
