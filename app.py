@@ -128,7 +128,8 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
 
     opts = get_base_ydl_opts()  
     opts.update({  
-        'format': '140/m4a/bestaudio/best',  
+        'format': '140/m4a/bestaudio/best',
+        'writethumbnail': False,
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
