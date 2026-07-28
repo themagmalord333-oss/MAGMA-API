@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-yt-dlp
+yt-dlp[default]
+yt-dlp-ejs
 ytmusicapi
 python-dotenv
 aiofiles
@@ -13,4 +14,3 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 redis
-yt-dlp[default]
