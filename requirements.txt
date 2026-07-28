@@ -14,4 +14,3 @@ opentelemetry-api
 opentelemetry-sdk
 opentelemetry-instrumentation-fastapi
 redis
-slowapi
