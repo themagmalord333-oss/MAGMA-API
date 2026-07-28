@@ -7,16 +7,11 @@ import logging
 import urllib.request
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 from dotenv import load_dotenv
 import yt_dlp
 from ytmusicapi import YTMusic
-
-# Rate Limiting Library
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 # Load environment variables from .env file
 load_dotenv()
@@ -48,8 +43,8 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # QUEUE & WORKER SYSTEM GLOBALS
 # ---------------------------------------------------------
 download_semaphore = None
+task_lock = None  # Lock for thread-safe active_tasks modification
 active_tasks = {}  # Tracks ongoing downloads to prevent duplicates
-limiter = Limiter(key_func=get_remote_address)
 
 # ---------------------------------------------------------
 # DATABASE & CACHE SYSTEM
@@ -112,18 +107,6 @@ def save_cached_metadata(data: Dict[str, Any], file_type: str):
     except Exception as e:
         logger.error(f"Error saving to cache DB: {e}")
 
-def find_legacy_cached_file(video_id: str, ext: str) -> Optional[str]:
-    if not video_id: return None
-    suffix = f"_{video_id}.{ext}"
-    try:
-        with os.scandir(DOWNLOAD_DIR) as entries:
-            for entry in entries:
-                if entry.name.endswith(suffix):
-                    return entry.name
-    except Exception as e:
-        pass
-    return None
-
 async def cache_cleanup_task():
     while True:
         try:
@@ -170,8 +153,10 @@ async def cache_cleanup_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global download_semaphore
+    global download_semaphore, task_lock
+    # Initialize locks inside the async event loop
     download_semaphore = asyncio.Semaphore(DOWNLOAD_WORKERS)
+    task_lock = asyncio.Lock()
     
     logger.info("Starting ANYSNAP Music API...")
     init_db()
@@ -190,10 +175,7 @@ async def lifespan(app: FastAPI):
 # APP INITIALIZATION
 # ---------------------------------------------------------
 
-app = FastAPI(title="ANYSNAP Music API", version="3.0.0-Production", lifespan=lifespan)
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
+app = FastAPI(title="ANYSNAP Music API", version="3.1.0-Production", lifespan=lifespan)
 ytmusic = YTMusic()
 
 # ---------------------------------------------------------
@@ -225,16 +207,6 @@ def get_base_ydl_opts() -> Dict[str, Any]:
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
     return opts
-
-def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
-    opts = get_base_ydl_opts()
-    opts['skip_download'] = True
-    try:  
-        with yt_dlp.YoutubeDL(opts) as ydl:  
-            info = ydl.extract_info(url, download=False)  
-            return {"title": info.get("title"), "thumbnail": info.get("thumbnail"), "videoId": info.get("id")}  
-    except Exception as e:  
-        raise RuntimeError(f"Failed to fetch thumbnail: {str(e)}")
 
 def download_audio_sync(url: str, video_id: str) -> Dict[str, Any]:
     opts = get_base_ydl_opts()  
@@ -312,11 +284,11 @@ def download_video_sync(url: str, video_id: str) -> Dict[str, Any]:
         raise RuntimeError(f"Internal Server Error: {str(e)}")
 
 # ---------------------------------------------------------
-# SMART DOWNLOAD MANAGER (QUEUE + DEDUPLICATION)
+# SMART DOWNLOAD MANAGER (QUEUE + LOCK DEDUPLICATION)
 # ---------------------------------------------------------
 
 async def smart_download(url: str, download_func, file_type: str):
-    """Handles Caching, Worker Limits, and Duplicate Request Prevention"""
+    """Handles Caching, Worker Limits, and strictly locked Duplicate Request Prevention"""
     video_id = extract_video_id(url)
     if not video_id:
         raise HTTPException(status_code=400, detail="Invalid YouTube URL")
@@ -337,16 +309,23 @@ async def smart_download(url: str, download_func, file_type: str):
         }
 
     task_key = f"{video_id}_{file_type}"
+    is_new_task = False
 
-    # 2. Duplicate Check: If already downloading, wait for it instead of starting a new process
-    if task_key in active_tasks:
-        logger.info(f"Duplicate request for {video_id}. Waiting for existing download...")
-        return await active_tasks[task_key]
+    # 2. Duplicate Check with strictly enforced Lock to prevent race conditions
+    async with task_lock:
+        if task_key in active_tasks:
+            logger.info(f"Duplicate request for {video_id}. Waiting for existing download...")
+            future = active_tasks[task_key]
+        else:
+            # Register new download task securely
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            active_tasks[task_key] = future
+            is_new_task = True
 
-    # Register new download task
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    active_tasks[task_key] = future
+    # If another user already initiated this, just wait for their result
+    if not is_new_task:
+        return await future
 
     try:
         # 3. Queue System: Wait for a worker slot to become available
@@ -354,29 +333,27 @@ async def smart_download(url: str, download_func, file_type: str):
             logger.info(f"Worker assigned. Starting download for: {video_id}")
             result = await asyncio.to_thread(download_func, url, video_id)
         
-        # Share the result with any other users who requested the same file
+        # Share the result with any queued identical requests
         future.set_result(result)
         return result
     except Exception as e:
         future.set_exception(e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # Remove from active tasks once done
-        active_tasks.pop(task_key, None)
+        # Clean up the task lock dictionary
+        async with task_lock:
+            active_tasks.pop(task_key, None)
 
 # ---------------------------------------------------------
 # API ROUTES
 # ---------------------------------------------------------
 
 @app.get("/")
-@limiter.limit("10/minute")
-async def root(request: Request):
-    return {"name": "ANYSNAP Music API", "version": "3.0.0-Production", "status": "online"}
+async def root():
+    return {"name": "ANYSNAP Music API", "version": "3.1.0-Production", "status": "online"}
 
 @app.get("/search")
-@limiter.limit("20/minute")
 async def search_youtube_music(
-    request: Request,
     q: str = Query(..., description="Search query"),
     limit: int = Query(1, description="Number of results to return (max 20)")
 ):
@@ -394,7 +371,6 @@ async def search_youtube_music(
                 "thumbnail": r.get("thumbnails", [])[-1].get("url") if r.get("thumbnails") else None  
             })  
 
-        # Returns strict JSON Object format
         if actual_limit == 1:  
             return {"status": True, "result": formatted_results[0] if formatted_results else {}}  
         return {"status": True, "results": formatted_results}
@@ -402,14 +378,12 @@ async def search_youtube_music(
         raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
 
 @app.get("/download")
-@limiter.limit("15/minute")
-async def download_audio(request: Request, url: str = Query(..., description="YouTube URL")):
+async def download_audio(url: str = Query(..., description="YouTube URL")):
     result = await smart_download(url, download_audio_sync, "mp3")
     return JSONResponse(content=result)
 
 @app.get("/video")
-@limiter.limit("10/minute")
-async def download_video(request: Request, url: str = Query(..., description="YouTube URL")):
+async def download_video(url: str = Query(..., description="YouTube URL")):
     result = await smart_download(url, download_video_sync, "mp4")
     return JSONResponse(content=result)
 
