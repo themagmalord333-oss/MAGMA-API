@@ -216,9 +216,7 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'retries': 10,
         'fragment_retries': 10,
         'socket_timeout': 30,
-        'continuedl': True, 
-        'js_runtimes': {'node': {}}, 
-        'remote_components': ['ejs:github']
+        'continuedl': True
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
@@ -292,7 +290,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=ios,android,web']}, 
+        'extractor_args': {'youtube': ['player_client=ios,android']}, 
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
@@ -394,7 +392,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=ios,android,web']},
+        'extractor_args': {'youtube': ['player_client=ios,android']},
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
