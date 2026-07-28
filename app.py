@@ -128,12 +128,10 @@ async def cache_cleanup_task():
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
 
-                    # 1. Scan actual disk directory for expired files (covers orphans too)
                     if os.path.exists(DOWNLOAD_DIR):
                         for entry in os.scandir(DOWNLOAD_DIR):
                             if entry.is_file():
                                 file_stat = entry.stat()
-                                # st_mtime safely protects active downloads from being deleted
                                 if file_stat.st_mtime < expiry_time:
                                     try:
                                         os.remove(entry.path)
@@ -142,7 +140,6 @@ async def cache_cleanup_task():
                                     except Exception as e:
                                         logger.warning(f"Could not delete old file {entry.name}: {e}")
 
-                    # 2. Sweep database for phantom records
                     cur.execute("SELECT id, file_path FROM downloads")
                     all_records = cur.fetchall()
                     for record in all_records:
@@ -153,7 +150,6 @@ async def cache_cleanup_task():
                     conn.commit()
                 return deleted_files, db_cleaned
 
-            # Execute blocking I/O on a separate thread
             deleted_files, db_cleaned = await asyncio.to_thread(perform_cleanup)
 
             if deleted_files > 0 or db_cleaned > 0:
@@ -162,9 +158,8 @@ async def cache_cleanup_task():
                 logger.info("Cleanup complete: No expired files found.")
 
         except Exception as e:
-            logger.error(f"Cache cleanup encountered an error (will retry next cycle): {e}")
+            logger.error(f"Cache cleanup encountered an error: {e}")
 
-        # Run cleanup every hour safely
         await asyncio.sleep(3600)
 
 # ---------------------------------------------------------
@@ -173,7 +168,6 @@ async def cache_cleanup_task():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info("Starting MAGMA Music API...")
     init_db()
 
@@ -184,12 +178,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to download cookies from COOKIE_URL: {e}")
 
-    # Start background cleanup loop
     cleanup_worker = asyncio.create_task(cache_cleanup_task())
 
-    yield # App runs here
+    yield 
 
-    # Shutdown
     logger.info("Shutting down MAGMA Music API...")
     cleanup_worker.cancel()
 
@@ -224,8 +216,8 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'retries': 10,
         'fragment_retries': 10,
         'socket_timeout': 30,
-        'continuedl': True, # Enable Download Resume
-        'js_runtimes': {'node': {}},
+        'continuedl': True, 
+        'js_runtimes': {'/usr/bin/node': {}}, # ⚡ FIXED: Absolute path for Node.js so PM2/API never misses it
         'remote_components': ['ejs:github']
     }
     if os.path.exists(COOKIES_FILE):
@@ -292,30 +284,29 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting audio download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
     opts.update({  
-        'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
+        'format': '140/ba[ext=m4a]/bestaudio/best', 
         'writethumbnail': False,
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
+        'extractor_args': {'youtube': ['player_client=ios,android,web']}, 
         'concurrent_fragment_downloads': 15,    
-        'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
+        'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
-        'quiet': True,
-        'no_warnings': True,
-        'updatetime': False,                    # Stops wasted Disk I/O modifying timestamps
+        'quiet': False,
+        'no_warnings': False,
+        'updatetime': False,                    
         'clean_infojson': False,
         'retries': 5,                           
         'fragment_retries': 5,                  
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0',                    # Force FFmpeg to use ALL CPU cores for MP3 encoding
-            '-vn', '-sn'                        # Strictly strip video/subs inside FFmpeg processing
+            '-threads', '0',                    
+            '-vn', '-sn'                        
         ]
     })  
 
@@ -398,26 +389,25 @@ def download_video_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting video download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
     opts.update({  
         'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
+        'extractor_args': {'youtube': ['player_client=ios,android,web']},
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'updatetime': False,
         'clean_infojson': False,
         'retries': 5,
         'fragment_retries': 5,
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
+            '-threads', '0'                     
         ]
     })  
 
