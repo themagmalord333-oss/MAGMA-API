@@ -217,7 +217,7 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'fragment_retries': 10,
         'socket_timeout': 30,
         'continuedl': True, 
-        'js_runtimes': {'/usr/bin/node': {}}, # ⚡ FIXED: Absolute path for Node.js so PM2/API never misses it
+        'js_runtimes': {'node': {}}, 
         'remote_components': ['ejs:github']
     }
     if os.path.exists(COOKIES_FILE):
