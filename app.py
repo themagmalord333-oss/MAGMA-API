@@ -6,17 +6,15 @@ import sqlite3
 import logging
 import urllib.request
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from typing import Any, Dict, Optional, List
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, FileResponse
 from dotenv import load_dotenv
 import yt_dlp
 from ytmusicapi import YTMusic
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Configuration from Environment Variables
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
 CACHE_EXPIRE_HOURS = float(os.getenv("CACHE_EXPIRE_HOURS", "24"))
 MAX_VIDEO_QUALITY = os.getenv("MAX_VIDEO_QUALITY", "720")
@@ -25,7 +23,6 @@ COOKIE_URL = os.getenv("COOKIE_URL", "")
 COOKIES_FILE = "cookies.txt"
 DB_FILE = "cache.db"
 
-# Setup Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -33,15 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ---------------------------------------------------------
-# DATABASE & CACHE SYSTEM
-# ---------------------------------------------------------
-
 def init_db():
-    """Initializes the SQLite database for caching metadata safely."""
     try:
         with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
             conn.execute('''
@@ -65,7 +56,6 @@ def init_db():
         logger.error(f"Database initialization failed: {e}")
 
 def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any]]:
-    """Retrieves cached metadata from SQLite and verifies file existence."""
     try:
         with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
             conn.row_factory = sqlite3.Row
@@ -86,7 +76,6 @@ def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any
         return None
 
 def save_cached_metadata(data: Dict[str, Any], file_type: str):
-    """Saves download metadata to SQLite."""
     try:
         with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
             conn.execute('''
@@ -102,7 +91,6 @@ def save_cached_metadata(data: Dict[str, Any], file_type: str):
         logger.error(f"Error saving to cache DB: {e}")
 
 def find_legacy_cached_file(video_id: str, ext: str) -> Optional[str]:
-    """Fallback to check un-indexed files downloaded before SQLite was added."""
     if not video_id: return None
     suffix = f"_{video_id}.{ext}"
     try:
@@ -115,7 +103,6 @@ def find_legacy_cached_file(video_id: str, ext: str) -> Optional[str]:
     return None
 
 async def cache_cleanup_task():
-    """Background task to delete old files and clean up the database without blocking the event loop."""
     while True:
         try:
             logger.info("Running advanced cache cleanup...")
@@ -128,12 +115,10 @@ async def cache_cleanup_task():
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
 
-                    # 1. Scan actual disk directory for expired files (covers orphans too)
                     if os.path.exists(DOWNLOAD_DIR):
                         for entry in os.scandir(DOWNLOAD_DIR):
                             if entry.is_file():
                                 file_stat = entry.stat()
-                                # st_mtime safely protects active downloads from being deleted
                                 if file_stat.st_mtime < expiry_time:
                                     try:
                                         os.remove(entry.path)
@@ -142,7 +127,6 @@ async def cache_cleanup_task():
                                     except Exception as e:
                                         logger.warning(f"Could not delete old file {entry.name}: {e}")
 
-                    # 2. Sweep database for phantom records
                     cur.execute("SELECT id, file_path FROM downloads")
                     all_records = cur.fetchall()
                     for record in all_records:
@@ -153,28 +137,21 @@ async def cache_cleanup_task():
                     conn.commit()
                 return deleted_files, db_cleaned
 
-            # Execute blocking I/O on a separate thread
             deleted_files, db_cleaned = await asyncio.to_thread(perform_cleanup)
 
             if deleted_files > 0 or db_cleaned > 0:
-                logger.info(f"Cleanup complete: Deleted {deleted_files} old files on disk, cleared {db_cleaned} orphaned DB records.")
+                logger.info(f"Cleanup complete: Deleted {deleted_files} old files on disk, cleared {db_cleaned} DB records.")
             else:
                 logger.info("Cleanup complete: No expired files found.")
 
         except Exception as e:
-            logger.error(f"Cache cleanup encountered an error (will retry next cycle): {e}")
+            logger.error(f"Cache cleanup encountered an error: {e}")
 
-        # Run cleanup every hour safely
         await asyncio.sleep(3600)
-
-# ---------------------------------------------------------
-# FASTAPI LIFESPAN (STARTUP/SHUTDOWN)
-# ---------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting MAGMA Music API...")
+    logger.info("Starting Anysnap Music API...")
     init_db()
 
     if COOKIE_URL:
@@ -184,28 +161,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to download cookies from COOKIE_URL: {e}")
 
-    # Start background cleanup loop
     cleanup_worker = asyncio.create_task(cache_cleanup_task())
 
-    yield # App runs here
+    yield 
 
-    # Shutdown
-    logger.info("Shutting down MAGMA Music API...")
+    logger.info("Shutting down Anysnap Music API...")
     cleanup_worker.cancel()
 
-# ---------------------------------------------------------
-# APP INITIALIZATION
-# ---------------------------------------------------------
-
-app = FastAPI(title="YouTube Downloader & Search API", version="2.2.0-Production", lifespan=lifespan)
+app = FastAPI(title="Anysnap Music API", version="3.0.0-Production", lifespan=lifespan)
 ytmusic = YTMusic()
 
-# ---------------------------------------------------------
-# YT-DLP HELPERS & DOWNLOADERS
-# ---------------------------------------------------------
-
 def extract_video_id(url: str) -> Optional[str]:
-    """Extracts the 11-character YouTube Video ID from a given URL."""
     if not url: return None
     if re.match(r"^[0-9A-Za-z_-]{11}$", url): return url
     pattern = r"(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/v\/)([0-9A-Za-z_-]{11})"  
@@ -221,12 +187,11 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'noplaylist': True,
         'quiet': False,
         'no_warnings': False,
-        'retries': 10,
-        'fragment_retries': 10,
+        'retries': 5,
+        'fragment_retries': 5,
         'socket_timeout': 30,
-        'continuedl': True, # Enable Download Resume
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github']
+        'continuedl': True,
+        'js_runtimes': {'node': {}}
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
@@ -292,30 +257,25 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting audio download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
     opts.update({  
-        'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
+        'format': 'bestaudio/best',
         'writethumbnail': False,
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
         'concurrent_fragment_downloads': 15,    
-        'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
+        'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
-        'quiet': True,
-        'no_warnings': True,
-        'updatetime': False,                    # Stops wasted Disk I/O modifying timestamps
+        'quiet': False,
+        'no_warnings': False,
+        'updatetime': False,                    
         'clean_infojson': False,
-        'retries': 5,                           
-        'fragment_retries': 5,                  
-        'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0',                    # Force FFmpeg to use ALL CPU cores for MP3 encoding
-            '-vn', '-sn'                        # Strictly strip video/subs inside FFmpeg processing
+            '-threads', '0',                    
+            '-vn', '-sn'                        
         ]
     })  
 
@@ -353,6 +313,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     except Exception as e:  
         logger.error(f"Unexpected error downloading audio for {url}: {e}")  
         raise RuntimeError(f"Internal Server Error: {str(e)}")
+
 
 def download_video_sync(url: str) -> Dict[str, Any]:
     video_id = extract_video_id(url)
@@ -398,26 +359,21 @@ def download_video_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting video download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
     opts.update({  
-        'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]',  
+        'format': f'bestvideo[height<={MAX_VIDEO_QUALITY}]+bestaudio/best[height<={MAX_VIDEO_QUALITY}]/best',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'updatetime': False,
         'clean_infojson': False,
-        'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
+            '-threads', '0'                     
         ]
     })  
 
@@ -462,28 +418,25 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         logger.error(f"Unexpected error downloading video for {url}: {e}")  
         raise RuntimeError(f"Internal Server Error: {str(e)}")
 
-# ---------------------------------------------------------
-# API ROUTES
-# ---------------------------------------------------------
 
-@app.get("/")
+@app.get("/", response_class=JSONResponse)
 async def root():
     return {
-        "name": "MAGMA Music API",
-        "version": "2.2.0-Production",
+        "name": "Anysnap Music API",
+        "version": "3.0.0-Production",
         "status": "online"
     }
 
-@app.get("/health")
+@app.get("/health", response_class=JSONResponse)
 async def health_check():
     return {
         "status": "healthy",
-        "version": "2.2.0",
+        "version": "3.0.0",
         "yt_dlp_version": yt_dlp.version.__version__,
         "cache_expiry_hours": CACHE_EXPIRE_HOURS
     }
 
-@app.get("/search")
+@app.get("/search", response_class=JSONResponse)
 async def search_youtube_music(
     q: str = Query(..., description="Search query"),
     limit: int = Query(1, description="Number of results to return (max 20)")
@@ -521,7 +474,7 @@ async def search_youtube_music(
         logger.error(f"Search error for query '{q}': {e}")  
         raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
 
-@app.get("/thumbnail")
+@app.get("/thumbnail", response_class=JSONResponse)
 async def get_thumbnail(url: str = Query(..., description="YouTube URL")):
     try:
         result = await asyncio.to_thread(fetch_thumbnail_sync, url)
@@ -530,20 +483,20 @@ async def get_thumbnail(url: str = Query(..., description="YouTube URL")):
         logger.error(f"Thumbnail API error: {e}")
         raise HTTPException(status_code=500, detail={"error": "Failed to fetch thumbnail", "message": str(e)})
 
-@app.get("/download")
+@app.get("/download", response_class=JSONResponse)
 async def download_audio(url: str = Query(..., description="YouTube URL")):
     try:
         result = await asyncio.to_thread(download_audio_sync, url)
-        return JSONResponse(content=result)
+        return result
     except Exception as e:
         logger.error(f"Audio download API error: {e}")
         raise HTTPException(status_code=500, detail={"error": "Audio download failed", "message": str(e)})
 
-@app.get("/video")
+@app.get("/video", response_class=JSONResponse)
 async def download_video(url: str = Query(..., description="YouTube URL")):
     try:
         result = await asyncio.to_thread(download_video_sync, url)
-        return JSONResponse(content=result)
+        return result
     except Exception as e:
         logger.error(f"Video download API error: {e}")
         raise HTTPException(status_code=500, detail={"error": "Video download failed", "message": str(e)})
@@ -554,7 +507,7 @@ async def get_file(filename: str):
     file_path = os.path.join(DOWNLOAD_DIR, filename)
     if not os.path.isfile(file_path):
         logger.warning(f"Requested file not found: {filename}")
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail={"error": "File not found"})
     return FileResponse(path=file_path, filename=filename)
 
 if __name__ == "__main__":
