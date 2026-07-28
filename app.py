@@ -6,15 +6,22 @@ import sqlite3
 import logging
 import urllib.request
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional, List
-from fastapi import FastAPI, HTTPException, Query
+from typing import Any, Dict, Optional
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, FileResponse
 from dotenv import load_dotenv
 import yt_dlp
 from ytmusicapi import YTMusic
 
+# Rate Limiting Library
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# Load environment variables from .env file
 load_dotenv()
 
+# Configuration from Environment Variables
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
 CACHE_EXPIRE_HOURS = float(os.getenv("CACHE_EXPIRE_HOURS", "24"))
 MAX_VIDEO_QUALITY = os.getenv("MAX_VIDEO_QUALITY", "720")
@@ -23,6 +30,10 @@ COOKIE_URL = os.getenv("COOKIE_URL", "")
 COOKIES_FILE = "cookies.txt"
 DB_FILE = "cache.db"
 
+# Worker Limit (Max simultaneous downloads)
+DOWNLOAD_WORKERS = int(os.getenv("DOWNLOAD_WORKERS", "3"))
+
+# Setup Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -30,7 +41,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# ---------------------------------------------------------
+# QUEUE & WORKER SYSTEM GLOBALS
+# ---------------------------------------------------------
+download_semaphore = None
+active_tasks = {}  # Tracks ongoing downloads to prevent duplicates
+limiter = Limiter(key_func=get_remote_address)
+
+# ---------------------------------------------------------
+# DATABASE & CACHE SYSTEM
+# ---------------------------------------------------------
 
 def init_db():
     try:
@@ -67,7 +90,6 @@ def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any
                 if os.path.isfile(row['file_path']) and os.path.getsize(row['file_path']) > 0:
                     return dict(row)
                 else:
-                    logger.warning(f"File {row['file_name']} missing from disk. Removing DB entry.")
                     cur.execute("DELETE FROM downloads WHERE id = ?", (row['id'],))
                     conn.commit()
             return None
@@ -99,15 +121,13 @@ def find_legacy_cached_file(video_id: str, ext: str) -> Optional[str]:
                 if entry.name.endswith(suffix):
                     return entry.name
     except Exception as e:
-        logger.error(f"Error reading {DOWNLOAD_DIR}: {e}")
+        pass
     return None
 
 async def cache_cleanup_task():
     while True:
         try:
-            logger.info("Running advanced cache cleanup...")
             expiry_time = time.time() - (CACHE_EXPIRE_HOURS * 3600)
-
             def perform_cleanup():
                 deleted_files = 0
                 db_cleaned = 0
@@ -124,52 +144,61 @@ async def cache_cleanup_task():
                                         os.remove(entry.path)
                                         deleted_files += 1
                                         cur.execute("DELETE FROM downloads WHERE file_name = ?", (entry.name,))
-                                    except Exception as e:
-                                        logger.warning(f"Could not delete old file {entry.name}: {e}")
+                                    except Exception:
+                                        pass
 
                     cur.execute("SELECT id, file_path FROM downloads")
-                    all_records = cur.fetchall()
-                    for record in all_records:
+                    for record in cur.fetchall():
                         if not os.path.exists(record['file_path']):
                             cur.execute("DELETE FROM downloads WHERE id = ?", (record['id'],))
                             db_cleaned += 1
-
                     conn.commit()
                 return deleted_files, db_cleaned
 
             deleted_files, db_cleaned = await asyncio.to_thread(perform_cleanup)
-
             if deleted_files > 0 or db_cleaned > 0:
-                logger.info(f"Cleanup complete: Deleted {deleted_files} old files on disk, cleared {db_cleaned} DB records.")
-            else:
-                logger.info("Cleanup complete: No expired files found.")
+                logger.info(f"Cleanup: {deleted_files} files, {db_cleaned} DB records removed.")
 
         except Exception as e:
-            logger.error(f"Cache cleanup encountered an error: {e}")
+            logger.error(f"Cleanup error: {e}")
 
         await asyncio.sleep(3600)
 
+# ---------------------------------------------------------
+# FASTAPI LIFESPAN
+# ---------------------------------------------------------
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Anysnap Music API...")
+    global download_semaphore
+    download_semaphore = asyncio.Semaphore(DOWNLOAD_WORKERS)
+    
+    logger.info("Starting ANYSNAP Music API...")
     init_db()
 
     if COOKIE_URL:
         try:
             urllib.request.urlretrieve(COOKIE_URL, COOKIES_FILE)
-            logger.info(f"Successfully downloaded cookies.txt from COOKIE_URL")
         except Exception as e:
-            logger.error(f"Failed to download cookies from COOKIE_URL: {e}")
+            logger.error(f"Cookie DL failed: {e}")
 
     cleanup_worker = asyncio.create_task(cache_cleanup_task())
-
     yield 
-
-    logger.info("Shutting down Anysnap Music API...")
     cleanup_worker.cancel()
 
-app = FastAPI(title="Anysnap Music API", version="3.0.0-Production", lifespan=lifespan)
+# ---------------------------------------------------------
+# APP INITIALIZATION
+# ---------------------------------------------------------
+
+app = FastAPI(title="ANYSNAP Music API", version="3.0.0-Production", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 ytmusic = YTMusic()
+
+# ---------------------------------------------------------
+# YT-DLP HELPERS & DOWNLOADERS
+# ---------------------------------------------------------
 
 def extract_video_id(url: str) -> Optional[str]:
     if not url: return None
@@ -185,17 +214,16 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'outtmpl': f'{DOWNLOAD_DIR}/%(title).150s_%(id)s.%(ext)s',
         'restrictfilenames': True,
         'noplaylist': True,
-        'quiet': False,
-        'no_warnings': False,
+        'quiet': True,
+        'no_warnings': True,
         'retries': 5,
-        'fragment_retries': 5,
-        'socket_timeout': 30,
-        'continuedl': True,
-        'js_runtimes': {'node': {}}
+        'socket_timeout': 15,
+        'continuedl': True, 
+        'js_runtimes': {'node': {}},
+        'remote_components': ['ejs:github']
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
-        logger.info(f"Loaded cookies from {COOKIES_FILE}")
     return opts
 
 def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
@@ -204,92 +232,27 @@ def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
     try:  
         with yt_dlp.YoutubeDL(opts) as ydl:  
             info = ydl.extract_info(url, download=False)  
-            return {  
-                "title": info.get("title"),  
-                "thumbnail": info.get("thumbnail"),  
-                "videoId": info.get("id")  
-            }  
+            return {"title": info.get("title"), "thumbnail": info.get("thumbnail"), "videoId": info.get("id")}  
     except Exception as e:  
-        logger.error(f"Thumbnail fetch error: {e}")  
         raise RuntimeError(f"Failed to fetch thumbnail: {str(e)}")
 
-def download_audio_sync(url: str) -> Dict[str, Any]:
-    video_id = extract_video_id(url)
-
-    if video_id:
-        cached_data = get_cached_metadata(video_id, "mp3")
-        if cached_data:
-            logger.info(f"Database cache hit! Returning audio for {video_id}")
-            return {
-                "status": True,
-                "title": cached_data["title"],
-                "duration": cached_data["duration"],
-                "thumbnail": cached_data["thumbnail"],
-                "filename": cached_data["file_name"],
-                "path": cached_data["file_path"],
-                "download_url": f"/files/{cached_data['file_name']}",
-                "videoId": video_id,
-                "uploader": "Cached",
-                "filesize": cached_data["file_size"]
-            }
-
-        legacy_file = find_legacy_cached_file(video_id, "mp3")
-        if legacy_file:
-            path = os.path.join(DOWNLOAD_DIR, legacy_file)
-            if os.path.isfile(path) and os.path.getsize(path) > 0:
-                logger.info(f"Legacy disk cache hit for {video_id}. Saving to DB.")
-                data = {
-                    "videoId": video_id,
-                    "title": legacy_file[:-len(f"_{video_id}.mp3")],
-                    "filename": legacy_file,
-                    "path": path,
-                    "type": "mp3",
-                    "filesize": os.path.getsize(path),
-                    "duration": 0,
-                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-                }
-                save_cached_metadata(data, "mp3")
-                data["status"] = True
-                data["download_url"] = f"/files/{legacy_file}"
-                data["uploader"] = "Cached"
-                return data
-
-    logger.info(f"Starting audio download for: {url}")
+def download_audio_sync(url: str, video_id: str) -> Dict[str, Any]:
     opts = get_base_ydl_opts()  
-
     opts.update({  
-        'format': 'bestaudio/best',
+        'format': '140/ba[ext=m4a]/bestaudio/best', 
         'writethumbnail': False,
-        'postprocessors': [{  
-            'key': 'FFmpegExtractAudio',  
-            'preferredcodec': 'mp3',  
-            'preferredquality': '192',  
-        }],
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+        'extractor_args': {'youtube': ['player_client=ios,android,web']}, 
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
-        'noprogress': True,
-        'quiet': False,
-        'no_warnings': False,
-        'updatetime': False,                    
-        'clean_infojson': False,
-        'postprocessor_args': [
-            '-threads', '0',                    
-            '-vn', '-sn'                        
-        ]
+        'postprocessor_args': ['-threads', '0', '-vn', '-sn']
     })  
-
     try:  
         with yt_dlp.YoutubeDL(opts) as ydl:  
             info = ydl.extract_info(url, download=True)  
             filename = ydl.prepare_filename(info)  
-            base_path, _ = os.path.splitext(filename)  
-            final_path = f"{base_path}.mp3"  
-
-            if not os.path.isfile(final_path) or os.path.getsize(final_path) == 0:  
-                raise RuntimeError("Downloaded file is missing or empty.")  
-
-            logger.info(f"Successfully downloaded audio: {final_path}")  
+            final_path = f"{os.path.splitext(filename)[0]}.mp3"  
 
             response_data = {  
                 "status": True,  
@@ -303,97 +266,33 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }
-
             save_cached_metadata(response_data, "mp3")
             return response_data
-
-    except yt_dlp.utils.DownloadError as e:  
-        logger.error(f"yt-dlp error downloading audio for {url}: {e}")  
-        raise RuntimeError(f"Download Error: {str(e)}")  
     except Exception as e:  
-        logger.error(f"Unexpected error downloading audio for {url}: {e}")  
         raise RuntimeError(f"Internal Server Error: {str(e)}")
 
-
-def download_video_sync(url: str) -> Dict[str, Any]:
-    video_id = extract_video_id(url)
-
-    if video_id:
-        cached_data = get_cached_metadata(video_id, "mp4")
-        if cached_data:
-            logger.info(f"Database cache hit! Returning video for {video_id}")
-            return {
-                "status": True,
-                "title": cached_data["title"],
-                "thumbnail": cached_data["thumbnail"],
-                "filename": cached_data["file_name"],
-                "path": cached_data["file_path"],
-                "download_url": f"/files/{cached_data['file_name']}",
-                "duration": cached_data["duration"],
-                "videoId": video_id,
-                "uploader": "Cached",
-                "filesize": cached_data["file_size"]
-            }
-
-        legacy_file = find_legacy_cached_file(video_id, "mp4")
-        if legacy_file:
-            path = os.path.join(DOWNLOAD_DIR, legacy_file)
-            if os.path.isfile(path) and os.path.getsize(path) > 0:
-                logger.info(f"Legacy disk cache hit for {video_id}. Saving to DB.")
-                data = {
-                    "videoId": video_id,
-                    "title": legacy_file[:-len(f"_{video_id}.mp4")],
-                    "filename": legacy_file,
-                    "path": path,
-                    "type": "mp4",
-                    "filesize": os.path.getsize(path),
-                    "duration": 0,
-                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-                }
-                save_cached_metadata(data, "mp4")
-                data["status"] = True
-                data["download_url"] = f"/files/{legacy_file}"
-                data["uploader"] = "Cached"
-                return data
-
-    logger.info(f"Starting video download for: {url}")
+def download_video_sync(url: str, video_id: str) -> Dict[str, Any]:
     opts = get_base_ydl_opts()  
-
     opts.update({  
-        'format': f'bestvideo[height<={MAX_VIDEO_QUALITY}]+bestaudio/best[height<={MAX_VIDEO_QUALITY}]/best',  
+        'format': f'bv*[height<={MAX_VIDEO_QUALITY}][ext=mp4]+ba[ext=m4a]/b[height<={MAX_VIDEO_QUALITY}][ext=mp4]/best',  
         'merge_output_format': 'mp4',
-        'writethumbnail': False,
-        'embedthumbnail': False,
+        'extractor_args': {'youtube': ['player_client=ios,android,web']},
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
-        'noprogress': True,
-        'quiet': False,
-        'no_warnings': False,
-        'updatetime': False,
-        'clean_infojson': False,
-        'postprocessor_args': [
-            '-threads', '0'                     
-        ]
+        'postprocessor_args': ['-threads', '0']
     })  
-
     try:  
         with yt_dlp.YoutubeDL(opts) as ydl:  
             info = ydl.extract_info(url, download=True)  
             filename = ydl.prepare_filename(info)  
-            base_path, _ = os.path.splitext(filename)  
-
+            base_path = os.path.splitext(filename)[0]
+            
             final_path = f"{base_path}.mp4"
             for ext in [".mp4", ".webm", ".mkv"]:
-                test_path = f"{base_path}{ext}"
-                if os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
-                    final_path = test_path
+                if os.path.isfile(f"{base_path}{ext}"):
+                    final_path = f"{base_path}{ext}"
                     break
-
-            if not (os.path.isfile(final_path) and os.path.getsize(final_path) > 0):  
-                raise RuntimeError("Downloaded file not found or is empty.")  
-
-            logger.info(f"Successfully downloaded video: {final_path}")  
 
             response_data = {  
                 "status": True,  
@@ -407,107 +306,119 @@ def download_video_sync(url: str) -> Dict[str, Any]:
                 "uploader": info.get("uploader"),  
                 "filesize": os.path.getsize(final_path)  
             }
-
             save_cached_metadata(response_data, "mp4")
             return response_data
-
-    except yt_dlp.utils.DownloadError as e:  
-        logger.error(f"yt-dlp error downloading video for {url}: {e}")  
-        raise RuntimeError(f"Download Error: {str(e)}")  
     except Exception as e:  
-        logger.error(f"Unexpected error downloading video for {url}: {e}")  
         raise RuntimeError(f"Internal Server Error: {str(e)}")
 
+# ---------------------------------------------------------
+# SMART DOWNLOAD MANAGER (QUEUE + DEDUPLICATION)
+# ---------------------------------------------------------
 
-@app.get("/", response_class=JSONResponse)
-async def root():
-    return {
-        "name": "Anysnap Music API",
-        "version": "3.0.0-Production",
-        "status": "online"
-    }
+async def smart_download(url: str, download_func, file_type: str):
+    """Handles Caching, Worker Limits, and Duplicate Request Prevention"""
+    video_id = extract_video_id(url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL")
 
-@app.get("/health", response_class=JSONResponse)
-async def health_check():
-    return {
-        "status": "healthy",
-        "version": "3.0.0",
-        "yt_dlp_version": yt_dlp.version.__version__,
-        "cache_expiry_hours": CACHE_EXPIRE_HOURS
-    }
+    # 1. DB Cache Check (Fast Return)
+    cached_data = get_cached_metadata(video_id, file_type)
+    if cached_data:
+        logger.info(f"DB Cache hit for {video_id}")
+        return {
+            "status": True,
+            "title": cached_data["title"],
+            "thumbnail": cached_data["thumbnail"],
+            "filename": cached_data["file_name"],
+            "download_url": f"/files/{cached_data['file_name']}",
+            "videoId": video_id,
+            "uploader": "Cached",
+            "filesize": cached_data["file_size"]
+        }
 
-@app.get("/search", response_class=JSONResponse)
+    task_key = f"{video_id}_{file_type}"
+
+    # 2. Duplicate Check: If already downloading, wait for it instead of starting a new process
+    if task_key in active_tasks:
+        logger.info(f"Duplicate request for {video_id}. Waiting for existing download...")
+        return await active_tasks[task_key]
+
+    # Register new download task
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    active_tasks[task_key] = future
+
+    try:
+        # 3. Queue System: Wait for a worker slot to become available
+        async with download_semaphore:
+            logger.info(f"Worker assigned. Starting download for: {video_id}")
+            result = await asyncio.to_thread(download_func, url, video_id)
+        
+        # Share the result with any other users who requested the same file
+        future.set_result(result)
+        return result
+    except Exception as e:
+        future.set_exception(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Remove from active tasks once done
+        active_tasks.pop(task_key, None)
+
+# ---------------------------------------------------------
+# API ROUTES
+# ---------------------------------------------------------
+
+@app.get("/")
+@limiter.limit("10/minute")
+async def root(request: Request):
+    return {"name": "ANYSNAP Music API", "version": "3.0.0-Production", "status": "online"}
+
+@app.get("/search")
+@limiter.limit("20/minute")
 async def search_youtube_music(
+    request: Request,
     q: str = Query(..., description="Search query"),
     limit: int = Query(1, description="Number of results to return (max 20)")
 ):
     try:
-        logger.info(f"Received search request for query '{q}' with limit {limit}")
         actual_limit = min(max(1, limit), 20)  
-
-        def perform_search():  
-            return ytmusic.search(q, filter="songs", limit=actual_limit)  
-
-        results = await asyncio.to_thread(perform_search)  
+        results = await asyncio.to_thread(lambda: ytmusic.search(q, filter="songs", limit=actual_limit))  
 
         formatted_results = []  
         for r in results:  
-            artists = ", ".join([a.get("name", "") for a in r.get("artists", [])])  
-            thumbnails = r.get("thumbnails", [])  
-            thumbnail_url = thumbnails[-1].get("url") if thumbnails else None  
-
             formatted_results.append({  
                 "title": r.get("title"),  
-                "artist": artists,  
+                "artist": ", ".join([a.get("name", "") for a in r.get("artists", [])]),  
                 "videoId": r.get("videoId"),  
                 "duration": r.get("duration"),  
-                "thumbnail": thumbnail_url  
+                "thumbnail": r.get("thumbnails", [])[-1].get("url") if r.get("thumbnails") else None  
             })  
 
-        logger.info(f"Successfully completed search for query '{q}', returned {len(formatted_results)} result(s)")  
-
+        # Returns strict JSON Object format
         if actual_limit == 1:  
-            return formatted_results[0] if formatted_results else {}  
-
-        return formatted_results  
+            return {"status": True, "result": formatted_results[0] if formatted_results else {}}  
+        return {"status": True, "results": formatted_results}
     except Exception as e:  
-        logger.error(f"Search error for query '{q}': {e}")  
         raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
 
-@app.get("/thumbnail", response_class=JSONResponse)
-async def get_thumbnail(url: str = Query(..., description="YouTube URL")):
-    try:
-        result = await asyncio.to_thread(fetch_thumbnail_sync, url)
-        return result
-    except Exception as e:
-        logger.error(f"Thumbnail API error: {e}")
-        raise HTTPException(status_code=500, detail={"error": "Failed to fetch thumbnail", "message": str(e)})
+@app.get("/download")
+@limiter.limit("15/minute")
+async def download_audio(request: Request, url: str = Query(..., description="YouTube URL")):
+    result = await smart_download(url, download_audio_sync, "mp3")
+    return JSONResponse(content=result)
 
-@app.get("/download", response_class=JSONResponse)
-async def download_audio(url: str = Query(..., description="YouTube URL")):
-    try:
-        result = await asyncio.to_thread(download_audio_sync, url)
-        return result
-    except Exception as e:
-        logger.error(f"Audio download API error: {e}")
-        raise HTTPException(status_code=500, detail={"error": "Audio download failed", "message": str(e)})
-
-@app.get("/video", response_class=JSONResponse)
-async def download_video(url: str = Query(..., description="YouTube URL")):
-    try:
-        result = await asyncio.to_thread(download_video_sync, url)
-        return result
-    except Exception as e:
-        logger.error(f"Video download API error: {e}")
-        raise HTTPException(status_code=500, detail={"error": "Video download failed", "message": str(e)})
+@app.get("/video")
+@limiter.limit("10/minute")
+async def download_video(request: Request, url: str = Query(..., description="YouTube URL")):
+    result = await smart_download(url, download_video_sync, "mp4")
+    return JSONResponse(content=result)
 
 @app.get("/files/{filename}")
 async def get_file(filename: str):
     filename = os.path.basename(filename)
     file_path = os.path.join(DOWNLOAD_DIR, filename)
     if not os.path.isfile(file_path):
-        logger.warning(f"Requested file not found: {filename}")
-        raise HTTPException(status_code=404, detail={"error": "File not found"})
+        raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=file_path, filename=filename)
 
 if __name__ == "__main__":
