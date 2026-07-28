@@ -292,30 +292,30 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting audio download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
+    # ⚡ FIX: Flexible Audio Format to prevent crashes
     opts.update({  
-        'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
+        'format': 'bestaudio/best', # Safer fallback
         'writethumbnail': False,
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=ios,android,web']}, # iOS/Android bypasses JS throttling
+        'extractor_args': {'youtube': ['player_client=android,web']}, # Simplified client logic to avoid blocks
         'concurrent_fragment_downloads': 15,    
-        'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
+        'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
         'quiet': True,
         'no_warnings': True,
-        'updatetime': False,                    # Stops wasted Disk I/O modifying timestamps
+        'updatetime': False,                    
         'clean_infojson': False,
         'retries': 5,                           
         'fragment_retries': 5,                  
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0',                    # Force FFmpeg to use ALL CPU cores for MP3 encoding
-            '-vn', '-sn'                        # Strictly strip video/subs inside FFmpeg processing
+            '-threads', '0',                    
+            '-vn', '-sn'                        
         ]
     })  
 
@@ -398,13 +398,13 @@ def download_video_sync(url: str) -> Dict[str, Any]:
     logger.info(f"Starting video download for: {url}")
     opts = get_base_ydl_opts()  
 
-    # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
+    # ⚡ FIX: Flexible Video Format with Fallback
     opts.update({  
-        'format': f'bestvideo[vcodec^=avc1][height<={MAX_VIDEO_QUALITY}]+bestaudio[acodec^=mp4a]/bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]',  
+        'format': f'bestvideo[height<={MAX_VIDEO_QUALITY}]+bestaudio/best[height<={MAX_VIDEO_QUALITY}]/best',  
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=ios,android,web']},
+        'extractor_args': {'youtube': ['player_client=android,web']},
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
@@ -417,9 +417,8 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'fragment_retries': 5,
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
+            '-threads', '0'                     
         ]
-        # ⚠️ Removed FFmpegVideoConvertor: The merge_output_format='mp4' flag merges natively without wasting CPU re-encoding.
     })  
 
     try:  
