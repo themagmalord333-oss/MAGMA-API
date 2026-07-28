@@ -301,7 +301,7 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=ios,android,web']}, # iOS/Android bypasses JS throttling
+        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
         'nocheckcertificate': True,
@@ -404,7 +404,7 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=ios,android,web']},
+        'extractor_args': {'youtube': ['player_client=tv,web']}, # ⚡ iOS aur Android ko hata diya, takki block na ho
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
@@ -419,7 +419,6 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'postprocessor_args': [
             '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
         ]
-        # ⚠️ Removed FFmpegVideoConvertor: The merge_output_format='mp4' flag merges natively without wasting CPU re-encoding.
     })  
 
     try:  
