@@ -496,4 +496,68 @@ async def search_youtube_music(
         def perform_search():  
             return ytmusic.search(q, filter="songs", limit=actual_limit)  
 
-        results = await
+        results = await asyncio.to_thread(perform_search)  
+
+        formatted_results = []  
+        for r in results:  
+            artists = ", ".join([a.get("name", "") for a in r.get("artists", [])])  
+            thumbnails = r.get("thumbnails", [])  
+            thumbnail_url = thumbnails[-1].get("url") if thumbnails else None  
+
+            formatted_results.append({  
+                "title": r.get("title"),  
+                "artist": artists,  
+                "videoId": r.get("videoId"),  
+                "duration": r.get("duration"),  
+                "thumbnail": thumbnail_url  
+            })  
+
+        logger.info(f"Successfully completed search for query '{q}', returned {len(formatted_results)} result(s)")  
+
+        if actual_limit == 1:  
+            return formatted_results[0] if formatted_results else {}  
+
+        return formatted_results  
+    except Exception as e:  
+        logger.error(f"Search error for query '{q}': {e}")  
+        raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
+
+@app.get("/thumbnail")
+async def get_thumbnail(url: str = Query(..., description="YouTube URL")):
+    try:
+        result = await asyncio.to_thread(fetch_thumbnail_sync, url)
+        return result
+    except Exception as e:
+        logger.error(f"Thumbnail API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Failed to fetch thumbnail", "message": str(e)})
+
+@app.get("/download")
+async def download_audio(url: str = Query(..., description="YouTube URL")):
+    try:
+        result = await asyncio.to_thread(download_audio_sync, url)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Audio download API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Audio download failed", "message": str(e)})
+
+@app.get("/video")
+async def download_video(url: str = Query(..., description="YouTube URL")):
+    try:
+        result = await asyncio.to_thread(download_video_sync, url)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Video download API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Video download failed", "message": str(e)})
+
+@app.get("/files/{filename}")
+async def get_file(filename: str):
+    filename = os.path.basename(filename)
+    file_path = os.path.join(DOWNLOAD_DIR, filename)
+    if not os.path.isfile(file_path):
+        logger.warning(f"Requested file not found: {filename}")
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path=file_path, filename=filename)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
