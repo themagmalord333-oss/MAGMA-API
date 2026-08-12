@@ -1,8 +1,6 @@
 name: Run FastAPI Music API with Tunnel
 
 on:
-  schedule:
-    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
@@ -33,26 +31,20 @@ jobs:
 
     - name: Start FastAPI & Expose Public URL
       env:
-        NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }} # Yahan apna Ngrok token secret me add karein
+        NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
       run: |
-        # Ngrok setup
         ngrok config add-authtoken $NGROK_TOKEN
 
-        # Background me FastAPI server start karein
         python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 &
 
-        # Wait for FastAPI to start
         sleep 5
 
-        # Ngrok tunnel start karein
         ngrok http 8000 --log=stdout > ngrok.log &
         sleep 5
 
-        # Public URL Print Karein Logs me
         echo "=================================================="
         echo "YOUR PUBLIC API URL IS BELOW:"
         curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*' | head -n 1
         echo "=================================================="
 
-        # Process ko alive rakhne ke liye
         tail -f ngrok.log
