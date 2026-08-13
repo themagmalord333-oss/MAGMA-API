@@ -2,9 +2,12 @@ name: MAGMA Music API
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
+    paths-ignore:
+      - "backend-url.json"
 
 permissions:
   contents: write
