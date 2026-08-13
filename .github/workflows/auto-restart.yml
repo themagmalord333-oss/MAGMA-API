@@ -1,4 +1,4 @@
-name: Auto Restart MAGMA API
+name: Auto Restart MAGMA Music API
 
 on:
   workflow_run:
@@ -24,8 +24,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Wait for Previous Run to Fully Close
-        run: sleep 20
+      - name: Wait for Previous Runner to Fully Close
+        run: |
+          echo "Previous API runner completed."
+          echo "Waiting 20 seconds..."
+          sleep 20
 
       - name: Start Next API Run
         env:
