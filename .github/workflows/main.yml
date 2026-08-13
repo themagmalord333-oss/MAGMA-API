@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 concurrency:
   group: magma-api-runner
   cancel-in-progress: false
@@ -24,18 +27,108 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install FFmpeg
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg curl
 
-      - name: Install Dependencies
+      - name: Install Ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | \
+            sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | \
+            sudo tee /etc/apt/sources.list.d/ngrok.list
+
+          sudo apt-get update
+          sudo apt-get install -y ngrok
+
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
+
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
 
-      - name: Start API
+      - name: Configure Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
-          uvicorn app:app --host 0.0.0.0 --port 8000
+          ngrok config add-authtoken "$NGROK_TOKEN"
+
+      - name: Start FastAPI
+        run: |
+          uvicorn app:app \
+            --host 0.0.0.0 \
+            --port 8000 > api.log 2>&1 &
+
+          echo $! > api.pid
+
+          echo "FastAPI starting..."
+
+          sleep 5
+
+          cat api.log || true
+
+      - name: Start Ngrok
+        run: |
+          ngrok http 8000 --log=stdout > ngrok.log 2>&1 &
+
+          echo $! > ngrok.pid
+
+          sleep 5
+
+          echo "Ngrok started."
+
+      - name: Get Public Ngrok URL
+        run: |
+          PUBLIC_URL=""
+
+          for i in {1..20}; do
+            PUBLIC_URL=$(curl -s http://127.0.0.1:4040/api/tunnels | \
+              grep -o 'https://[^"]*' | head -n 1 || true)
+
+            if [ -n "$PUBLIC_URL" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "ERROR: Could not get Ngrok public URL."
+            cat ngrok.log || true
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "CURRENT MAGMA API URL:"
+          echo "$PUBLIC_URL"
+          echo "=========================================="
+
+          echo "{\"url\":\"$PUBLIC_URL\"}" > backend-url.json
+
+      - name: Update Backend URL
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add backend-url.json
+
+          git diff --cached --quiet && {
+            echo "Backend URL has not changed."
+            exit 0
+          }
+
+          git commit -m "Update current API backend URL"
+
+          git push
+
+      - name: Keep API Running
+        run: |
+          echo "=========================================="
+          echo "MAGMA MUSIC API IS RUNNING"
+          echo "=========================================="
+
+          tail -f api.log
