@@ -12,6 +12,7 @@ on:
 permissions:
   contents: write
 
+# Never allow two API instances from this workflow to run together.
 concurrency:
   group: magma-api-runner
   cancel-in-progress: false
@@ -20,10 +21,12 @@ jobs:
   run-api:
     runs-on: ubuntu-latest
 
-    # GitHub-hosted runner ki maximum practical job limit
+    # GitHub-hosted runner maximum execution window.
+    # Auto Restart handles the next run after this ends.
     timeout-minutes: 360
 
     steps:
+
       # ============================================================
       # CHECKOUT
       # ============================================================
@@ -31,6 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
 
       # ============================================================
       # PYTHON
@@ -39,32 +43,38 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       # ============================================================
       # SYSTEM DEPENDENCIES
       # ============================================================
       - name: Install System Dependencies
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl git
 
-          echo "FFmpeg version:"
-          ffmpeg -version | head -n 1
-
-          echo "Python version:"
+          echo "=========================================="
+          echo "Python:"
           python --version
 
-          echo "Git version:"
+          echo "FFmpeg:"
+          ffmpeg -version | head -n 1
+
+          echo "Git:"
           git --version
 
+          echo "=========================================="
+
       # ============================================================
-      # NGROK
+      # INSTALL NGROK
       # ============================================================
       - name: Install Ngrok
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | \
             sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
@@ -75,35 +85,36 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ngrok
 
-          echo "Ngrok version:"
           ngrok version
 
       # ============================================================
       # PYTHON DEPENDENCIES
       # ============================================================
       - name: Install Python Dependencies
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
-            echo "Installing requirements.txt..."
             pip install -r requirements.txt
           else
-            echo "WARNING: requirements.txt not found."
+            echo "ERROR: requirements.txt not found."
+            exit 1
           fi
 
       # ============================================================
-      # NGROK AUTH
+      # NGROK AUTHENTICATION
       # ============================================================
       - name: Configure Ngrok
+        shell: bash
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
-          set -e
+          set -Eeuo pipefail
 
-          if [ -z "$NGROK_TOKEN" ]; then
+          if [ -z "${NGROK_TOKEN:-}" ]; then
             echo "ERROR: NGROK_TOKEN secret is missing."
             exit 1
           fi
@@ -116,14 +127,15 @@ jobs:
       # START FASTAPI
       # ============================================================
       - name: Start FastAPI
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           rm -f api.log api.pid
 
           echo "Starting MAGMA Music API..."
 
-          uvicorn app:app \
+          nohup uvicorn app:app \
             --host 0.0.0.0 \
             --port 8000 \
             > api.log 2>&1 &
@@ -134,52 +146,61 @@ jobs:
 
           echo "FastAPI PID: $API_PID"
 
-          echo "Waiting for FastAPI to start..."
+          echo "Waiting for FastAPI..."
+
+          READY=0
 
           for i in {1..30}; do
 
-            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-              echo "FastAPI is responding on port 8000."
+            if ! kill -0 "$API_PID" 2>/dev/null; then
+              echo "ERROR: FastAPI stopped during startup."
+              cat api.log || true
+              exit 1
+            fi
+
+            # Any HTTP response means the server is listening.
+            # This avoids assuming that "/" must return 200.
+            HTTP_CODE=$(curl \
+              -s \
+              -o /dev/null \
+              -w "%{http_code}" \
+              --connect-timeout 3 \
+              --max-time 5 \
+              http://127.0.0.1:8000/ || true)
+
+            if [[ "$HTTP_CODE" =~ ^[1-4][0-9][0-9]$ ]]; then
+              READY=1
+              echo "FastAPI is ready. HTTP status: $HTTP_CODE"
               break
             fi
 
-            if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo "ERROR: FastAPI process stopped during startup."
-              echo "========== API LOG =========="
-              cat api.log || true
-              echo "============================="
-              exit 1
-            fi
-
-            echo "Waiting... $i/30"
+            echo "FastAPI not ready yet: $i/30"
             sleep 2
-
-            if [ "$i" -eq 30 ]; then
-              echo "ERROR: FastAPI did not become ready."
-              echo "========== API LOG =========="
-              cat api.log || true
-              echo "============================="
-              exit 1
-            fi
-
           done
 
-          echo "========== FASTAPI LOG =========="
-          cat api.log || true
-          echo "================================="
+          if [ "$READY" -ne 1 ]; then
+            echo "ERROR: FastAPI did not become ready."
+
+            echo "========== API LOG =========="
+            tail -n 200 api.log || true
+            echo "============================="
+
+            exit 1
+          fi
 
       # ============================================================
       # START NGROK
       # ============================================================
       - name: Start Ngrok
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           rm -f ngrok.log ngrok.pid
 
           echo "Starting Ngrok..."
 
-          ngrok http 8000 \
+          nohup ngrok http 8000 \
             --log=stdout \
             > ngrok.log 2>&1 &
 
@@ -189,304 +210,350 @@ jobs:
 
           echo "Ngrok PID: $NGROK_PID"
 
-          echo "Waiting for Ngrok..."
+          READY=0
 
           for i in {1..30}; do
 
-            if curl -fsS http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
-              echo "Ngrok API is responding."
+            if ! kill -0 "$NGROK_PID" 2>/dev/null; then
+              echo "ERROR: Ngrok stopped during startup."
+
+              echo "========== NGROK LOG =========="
+              tail -n 200 ngrok.log || true
+              echo "==============================="
+
+              exit 1
+            fi
+
+            if curl -fsS \
+              --connect-timeout 3 \
+              --max-time 5 \
+              http://127.0.0.1:4040/api/tunnels \
+              >/dev/null 2>&1; then
+
+              READY=1
+              echo "Ngrok is ready."
               break
             fi
 
-            if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-              echo "ERROR: Ngrok process stopped during startup."
-              echo "========== NGROK LOG =========="
-              cat ngrok.log || true
-              echo "==============================="
-              exit 1
-            fi
-
-            echo "Waiting... $i/30"
+            echo "Ngrok not ready yet: $i/30"
             sleep 2
-
-            if [ "$i" -eq 30 ]; then
-              echo "ERROR: Ngrok did not start."
-              echo "========== NGROK LOG =========="
-              cat ngrok.log || true
-              echo "==============================="
-              exit 1
-            fi
-
           done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "ERROR: Ngrok did not become ready."
+
+            echo "========== NGROK LOG =========="
+            tail -n 200 ngrok.log || true
+            echo "==============================="
+
+            exit 1
+          fi
 
       # ============================================================
       # GET PUBLIC URL
       # ============================================================
       - name: Get Public Ngrok URL
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           PUBLIC_URL=""
 
-          echo "Getting current Ngrok public URL..."
+          echo "Getting Ngrok public URL..."
 
           for i in {1..30}; do
 
-            PUBLIC_URL=$(curl -s \
-              http://127.0.0.1:4040/api/tunnels \
-              | grep -o 'https://[^"]*' \
-              | head -n 1 || true)
+            PUBLIC_URL=$(
+              curl -fsS \
+                --connect-timeout 3 \
+                --max-time 5 \
+                http://127.0.0.1:4040/api/tunnels \
+              | python -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+
+    for tunnel in data.get("tunnels", []):
+        url = tunnel.get("public_url", "")
+        if url.startswith("https://"):
+            print(url)
+            break
+except Exception:
+    pass
+' || true
+            )
 
             if [ -n "$PUBLIC_URL" ]; then
               break
             fi
 
-            echo "Waiting for public URL... $i/30"
+            echo "Waiting for public URL: $i/30"
             sleep 2
-
           done
 
           if [ -z "$PUBLIC_URL" ]; then
             echo "ERROR: Could not get Ngrok public URL."
 
             echo "========== NGROK LOG =========="
-            cat ngrok.log || true
+            tail -n 200 ngrok.log || true
             echo "==============================="
 
             exit 1
           fi
 
           echo "=========================================="
-          echo "CURRENT MAGMA API URL:"
+          echo "CURRENT MAGMA API URL"
           echo "$PUBLIC_URL"
           echo "=========================================="
 
-          # Save URL for later Git update
-          echo "$PUBLIC_URL" > current_backend_url.txt
+          printf '%s\n' "$PUBLIC_URL" > current_backend_url.txt
 
-          # Also create the JSON file
           printf '{"url":"%s"}\n' "$PUBLIC_URL" > backend-url.json
 
-          echo "backend-url.json created:"
+          echo "Generated backend-url.json:"
           cat backend-url.json
 
       # ============================================================
-      # UPDATE BACKEND URL SAFELY
+      # SAFELY UPDATE BACKEND URL
       # ============================================================
       - name: Update Backend URL
+        shell: bash
         run: |
-          set -e
+          set -Eeuo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Save the newly generated URL before syncing with remote.
           cp backend-url.json /tmp/backend-url.json
 
-          echo "Fetching latest main branch..."
+          SUCCESS=0
 
-          git fetch origin main
+          for attempt in 1 2 3 4 5; do
 
-          # Move working tree to latest remote main.
-          # This avoids the 'fetch first' problem.
-          git reset --hard origin/main
+            echo "=========================================="
+            echo "Git update attempt: $attempt/5"
+            echo "=========================================="
 
-          # Restore newly generated backend URL.
-          cp /tmp/backend-url.json backend-url.json
+            git fetch origin main
 
-          echo "Checking backend URL change..."
+            # Synchronize local branch with latest remote.
+            git reset --hard origin/main
 
-          git add backend-url.json
+            # Restore newly generated URL.
+            cp /tmp/backend-url.json backend-url.json
 
-          if git diff --cached --quiet; then
-            echo "Backend URL has not changed."
-            exit 0
+            git add backend-url.json
+
+            if git diff --cached --quiet; then
+              echo "Backend URL has not changed."
+              SUCCESS=1
+              break
+            fi
+
+            git commit -m "Update current API backend URL"
+
+            if git push origin HEAD:main; then
+              echo "Backend URL pushed successfully."
+              SUCCESS=1
+              break
+            fi
+
+            echo "Push conflict detected."
+            echo "Retrying after remote synchronization..."
+
+            git reset --hard origin/main
+
+            sleep 3
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "ERROR: Could not safely update backend-url.json."
+            exit 1
           fi
 
-          echo "Committing new backend URL..."
-
-          git commit -m "Update current API backend URL"
-
-          echo "Pushing backend URL..."
-
-          git push origin HEAD:main
-
-          echo "Backend URL updated successfully."
-
       # ============================================================
-      # SHOW CURRENT STATUS
+      # SERVICE STATUS
       # ============================================================
-      - name: Show Service Status
+      - name: Verify Services
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
           echo "=========================================="
-          echo "MAGMA MUSIC API STATUS"
+          echo "SERVICE STATUS"
           echo "=========================================="
 
-          if [ -f api.pid ]; then
-            API_PID=$(cat api.pid)
+          API_PID=$(cat api.pid)
+          NGROK_PID=$(cat ngrok.pid)
 
-            if kill -0 "$API_PID" 2>/dev/null; then
-              echo "FastAPI: RUNNING"
-              echo "FastAPI PID: $API_PID"
-            else
-              echo "FastAPI: NOT RUNNING"
-            fi
+          if kill -0 "$API_PID" 2>/dev/null; then
+            echo "FastAPI: RUNNING"
           else
-            echo "FastAPI PID file not found."
+            echo "FastAPI: FAILED"
+            exit 1
           fi
 
-          if [ -f ngrok.pid ]; then
-            NGROK_PID=$(cat ngrok.pid)
-
-            if kill -0 "$NGROK_PID" 2>/dev/null; then
-              echo "Ngrok: RUNNING"
-              echo "Ngrok PID: $NGROK_PID"
-            else
-              echo "Ngrok: NOT RUNNING"
-            fi
+          if kill -0 "$NGROK_PID" 2>/dev/null; then
+            echo "Ngrok: RUNNING"
           else
-            echo "Ngrok PID file not found."
+            echo "Ngrok: FAILED"
+            exit 1
           fi
+
+          echo ""
+          echo "Public URL:"
+          cat current_backend_url.txt
 
           echo "=========================================="
 
       # ============================================================
-      # KEEP API RUNNING + HEALTH MONITOR
+      # KEEP API ALIVE + HEALTH MONITOR
       # ============================================================
       - name: Keep API Running
+        shell: bash
         run: |
-          set +e
+          set -Eeuo pipefail
 
           echo "=========================================="
           echo "MAGMA MUSIC API IS RUNNING"
           echo "=========================================="
 
-          echo "API URL:"
+          echo "Public URL:"
           cat current_backend_url.txt
 
           echo ""
-          echo "Monitoring FastAPI and Ngrok..."
-          echo "The workflow will automatically restart"
-          echo "after a failure or GitHub runner timeout."
+          echo "Health monitoring started."
+          echo "FastAPI + Ngrok will be checked every 30 seconds."
           echo "=========================================="
 
           while true; do
 
             # ------------------------------------------------------
-            # Check FastAPI process
+            # FASTAPI PROCESS
             # ------------------------------------------------------
             if [ ! -f api.pid ]; then
-              echo "ERROR: api.pid not found."
+              echo "ERROR: api.pid missing."
               exit 1
             fi
 
             API_PID=$(cat api.pid)
 
             if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo "ERROR: FastAPI process has stopped."
+              echo "ERROR: FastAPI process stopped."
 
-              echo "========== LAST API LOG =========="
-              tail -n 100 api.log || true
-              echo "================================="
+              echo "========== API LOG =========="
+              tail -n 200 api.log || true
+              echo "============================="
 
               exit 1
             fi
 
             # ------------------------------------------------------
-            # Check FastAPI HTTP response
+            # FASTAPI PORT / HTTP
             # ------------------------------------------------------
-            if ! curl -fsS \
-              --max-time 10 \
-              http://127.0.0.1:8000/ \
-              >/dev/null 2>&1; then
+            HTTP_CODE=$(
+              curl \
+                -s \
+                -o /dev/null \
+                -w "%{http_code}" \
+                --connect-timeout 5 \
+                --max-time 10 \
+                http://127.0.0.1:8000/ \
+                || true
+            )
+
+            if ! [[ "$HTTP_CODE" =~ ^[1-4][0-9][0-9]$ ]]; then
 
               echo "ERROR: FastAPI is not responding."
+              echo "HTTP status: ${HTTP_CODE:-NONE}"
 
-              echo "========== LAST API LOG =========="
-              tail -n 100 api.log || true
-              echo "================================="
+              echo "========== API LOG =========="
+              tail -n 200 api.log || true
+              echo "============================="
 
               exit 1
             fi
 
             # ------------------------------------------------------
-            # Check Ngrok process
+            # NGROK PROCESS
             # ------------------------------------------------------
             if [ ! -f ngrok.pid ]; then
-              echo "ERROR: ngrok.pid not found."
+              echo "ERROR: ngrok.pid missing."
               exit 1
             fi
 
             NGROK_PID=$(cat ngrok.pid)
 
             if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-              echo "ERROR: Ngrok process has stopped."
+              echo "ERROR: Ngrok process stopped."
 
-              echo "========== LAST NGROK LOG =========="
-              tail -n 100 ngrok.log || true
-              echo "===================================="
+              echo "========== NGROK LOG =========="
+              tail -n 200 ngrok.log || true
+              echo "==============================="
 
               exit 1
             fi
 
             # ------------------------------------------------------
-            # Check Ngrok local API
+            # NGROK LOCAL API
             # ------------------------------------------------------
             if ! curl -fsS \
+              --connect-timeout 5 \
               --max-time 10 \
               http://127.0.0.1:4040/api/tunnels \
               >/dev/null 2>&1; then
 
-              echo "ERROR: Ngrok is not responding."
+              echo "ERROR: Ngrok local API is not responding."
 
-              echo "========== LAST NGROK LOG =========="
-              tail -n 100 ngrok.log || true
-              echo "===================================="
+              echo "========== NGROK LOG =========="
+              tail -n 200 ngrok.log || true
+              echo "==============================="
 
               exit 1
             fi
 
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FastAPI + Ngrok OK"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FastAPI=$HTTP_CODE | Ngrok=OK"
 
             sleep 30
-
           done
 
       # ============================================================
-      # ALWAYS SHOW LOGS IF SOMETHING GOES WRONG
+      # SHOW LOGS IF SOMETHING FAILS
       # ============================================================
       - name: Show Logs On Failure
         if: failure()
+        shell: bash
         run: |
           echo "=========================================="
-          echo "FINAL API LOG"
+          echo "FINAL FASTAPI LOG"
           echo "=========================================="
 
-          tail -n 200 api.log || true
+          tail -n 300 api.log 2>/dev/null || true
 
           echo ""
           echo "=========================================="
           echo "FINAL NGROK LOG"
           echo "=========================================="
 
-          tail -n 200 ngrok.log || true
+          tail -n 300 ngrok.log 2>/dev/null || true
 
       # ============================================================
       # CLEANUP
       # ============================================================
-      - name: Stop Background Services
+      - name: Cleanup
         if: always()
+        shell: bash
         run: |
-          echo "Stopping background services..."
+          echo "Cleaning up background processes..."
 
           if [ -f api.pid ]; then
-            API_PID=$(cat api.pid)
-            kill "$API_PID" 2>/dev/null || true
+            kill "$(cat api.pid)" 2>/dev/null || true
           fi
 
           if [ -f ngrok.pid ]; then
-            NGROK_PID=$(cat ngrok.pid)
-            kill "$NGROK_PID" 2>/dev/null || true
+            kill "$(cat ngrok.pid)" 2>/dev/null || true
           fi
 
-          echo "Cleanup complete."
+          echo "Cleanup completed."
