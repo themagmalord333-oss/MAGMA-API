@@ -13,27 +13,34 @@ permissions:
 
 jobs:
   restart:
-    if: >
-      ${{
-        github.event.workflow_run.conclusion == 'success' ||
-        github.event.workflow_run.conclusion == 'failure' ||
-        github.event.workflow_run.conclusion == 'cancelled' ||
-        github.event.workflow_run.conclusion == 'timed_out'
-      }}
-
     runs-on: ubuntu-latest
 
     steps:
-      - name: Wait for Previous Runner to Fully Close
-        run: |
-          echo "Previous API runner completed."
-          echo "Waiting 20 seconds..."
-          sleep 20
 
+      # ============================================================
+      # WAIT FOR OLD RUN TO FULLY CLOSE
+      # ============================================================
+      - name: Wait for Previous Runner to Fully Close
+        shell: bash
+        run: |
+          echo "Previous MAGMA API workflow completed."
+          echo "Waiting 30 seconds..."
+          sleep 30
+
+      # ============================================================
+      # START NEW RUN
+      # ============================================================
       - name: Start Next API Run
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -Eeuo pipefail
+
+          echo "Starting next MAGMA Music API run..."
+
           gh workflow run "main.yml" \
             --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch }}"
+
+          echo "New MAGMA Music API run dispatched successfully."
