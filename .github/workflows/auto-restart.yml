@@ -20,7 +20,7 @@ jobs:
 
       - name: Start Next API Run
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PERSONAL_TOKEN }}
         run: |
           echo "Previous MAGMA API run completed."
           echo "Starting next MAGMA API run..."
