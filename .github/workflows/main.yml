@@ -3,76 +3,47 @@ name: MAGMA Music API
 on:
   workflow_dispatch:
 
-  repository_dispatch:
-    types:
-      - restart-api
-
-permissions:
-  contents: read
-
-concurrency:
-  group: magma-api
-  cancel-in-progress: false
-
 jobs:
   run-api:
-    name: Run MAGMA API
     runs-on: ubuntu-latest
-
-    # Keep below GitHub-hosted runner maximum.
-    timeout-minutes: 340
+    timeout-minutes: 350
 
     steps:
 
-      # ------------------------------------------------------------
+      # =========================
       # CHECKOUT
-      # ------------------------------------------------------------
+      # =========================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
 
-      # ------------------------------------------------------------
+      # =========================
       # PYTHON
-      # ------------------------------------------------------------
+      # =========================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
 
-      # ------------------------------------------------------------
+      # =========================
       # SYSTEM DEPENDENCIES
-      # ------------------------------------------------------------
+      # =========================
       - name: Install System Dependencies
-        shell: bash
         run: |
-          set -e
-
           sudo apt-get update
-
-          sudo apt-get install -y \
-            ffmpeg \
-            curl \
-            wget \
-            unzip \
-            jq
-
-          echo "✅ System packages installed."
+          sudo apt-get install -y ffmpeg curl git unzip
 
 
-      # ------------------------------------------------------------
-      # NGROK
-      # ------------------------------------------------------------
+      # =========================
+      # INSTALL NGROK
+      # =========================
       - name: Install Ngrok
-        shell: bash
         run: |
-          set -e
-
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
             | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
 
-          echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
             | sudo tee /etc/apt/sources.list.d/ngrok.list
 
           sudo apt-get update
@@ -80,439 +51,306 @@ jobs:
 
           ngrok version
 
-          echo "✅ Ngrok installed."
 
-
-      # ------------------------------------------------------------
+      # =========================
       # PYTHON DEPENDENCIES
-      # ------------------------------------------------------------
+      # =========================
       - name: Install Python Dependencies
-        shell: bash
         run: |
-          set -e
-
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          else
-            pip install \
-              fastapi \
-              "uvicorn[standard]" \
-              python-dotenv \
-              aiohttp \
-              requests
           fi
 
-          echo "✅ Python dependencies installed."
+          pip install fastapi uvicorn python-dotenv
 
 
-      # ------------------------------------------------------------
-      # ENVIRONMENT
-      # ------------------------------------------------------------
+      # =========================
+      # CLEAN ENVIRONMENT
+      # =========================
       - name: Generate Environment
-        shell: bash
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+          MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
         run: |
           set -e
 
+          echo "Creating clean environment..."
+
+          rm -f .env
+          touch .env
+
+          # Required application settings
+          echo "DOWNLOAD_WORKERS=3" >> .env
+          echo "APP_HOST=0.0.0.0" >> .env
+          echo "APP_PORT=8000" >> .env
+
+          # Ngrok
           if [ -z "$NGROK_TOKEN" ]; then
             echo "❌ NGROK_TOKEN secret is missing!"
             exit 1
           fi
 
-          touch .env
-
           echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
-          echo "APP_HOST=0.0.0.0" >> .env
-          echo "APP_PORT=8000" >> .env
 
+          # MongoDB
+          if [ -n "$MONGO_DB_URI" ]; then
+            echo "MONGO_DB_URI=$MONGO_DB_URI" >> .env
+          fi
+
+          # Telegram API
+          if [ -n "$API_ID" ]; then
+            echo "API_ID=$API_ID" >> .env
+          fi
+
+          if [ -n "$API_HASH" ]; then
+            echo "API_HASH=$API_HASH" >> .env
+          fi
+
+          echo ""
           echo "✅ Environment prepared."
+          echo "DOWNLOAD_WORKERS=3"
 
 
-      # ------------------------------------------------------------
+      # =========================
       # CONFIGURE NGROK
-      # ------------------------------------------------------------
+      # =========================
       - name: Configure Ngrok
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-        shell: bash
         run: |
           set -e
 
           ngrok config add-authtoken "$NGROK_TOKEN"
 
-          echo "✅ Ngrok configured."
+          echo "✅ Ngrok configured successfully."
 
 
-      # ------------------------------------------------------------
+      # =========================
       # CHECK APP
-      # ------------------------------------------------------------
+      # =========================
       - name: Check app.py
-        shell: bash
         run: |
           set -e
 
           if [ ! -f app.py ]; then
             echo "❌ app.py not found!"
-            echo ""
-            find . -maxdepth 2 -type f | sort
             exit 1
           fi
 
           echo "✅ app.py found."
 
+          # Make sure DOWNLOAD_WORKERS can never receive NGROK_TOKEN
+          export DOWNLOAD_WORKERS=3
+
           python - <<'PY'
-          import app
+          import os
 
-          if not hasattr(app, "app"):
-              raise SystemExit(
-                  "❌ app.py does not contain 'app'"
-              )
+          value = os.getenv("DOWNLOAD_WORKERS", "3")
 
-          print("✅ FastAPI object app:app found.")
+          try:
+              workers = int(value)
+          except (ValueError, TypeError):
+              workers = 3
+
+          print(f"DOWNLOAD_WORKERS={workers}")
           PY
 
 
-      # ------------------------------------------------------------
+      # =========================
       # START FASTAPI
-      # ------------------------------------------------------------
+      # =========================
       - name: Start FastAPI
-        shell: bash
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+          MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          DOWNLOAD_WORKERS: "3"
+          APP_HOST: "0.0.0.0"
+          APP_PORT: "8000"
         run: |
-          set -u
+          set -e
 
           echo "======================================"
-          echo "STARTING MAGMA MUSIC API"
+          echo "      STARTING MAGMA MUSIC API"
           echo "======================================"
 
-          rm -f api.log api.pid
+          export DOWNLOAD_WORKERS=3
 
-          python -m uvicorn app:app \
-            --host 0.0.0.0 \
-            --port 8000 \
-            --log-level info \
-            > api.log 2>&1 &
-
+          nohup python app.py > api.log 2>&1 &
           API_PID=$!
 
           echo "$API_PID" > api.pid
 
-          echo "API PID: $API_PID"
+          sleep 8
 
-          echo ""
-          echo "Waiting for FastAPI..."
-
-          READY=0
-
-          for i in $(seq 1 30); do
-
-            if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo ""
-              echo "❌ FastAPI stopped during startup."
-              echo ""
-              echo "========== API ERROR =========="
-              cat api.log || true
-              echo "==============================="
-              exit 1
-            fi
-
-            if curl -fsS \
-              --max-time 5 \
-              http://127.0.0.1:8000/docs \
-              >/dev/null 2>&1; then
-
-              READY=1
-              break
-            fi
-
-            echo "Waiting... $i/30"
-            sleep 2
-
-          done
-
-          if [ "$READY" != "1" ]; then
+          if ! kill -0 "$API_PID" 2>/dev/null; then
+            echo "❌ FastAPI failed to start!"
             echo ""
-            echo "❌ FastAPI did not become ready."
-            echo ""
-            echo "========== API ERROR =========="
-            cat api.log || true
-            echo "==============================="
+            echo "========== API LOG =========="
+            cat api.log
             exit 1
           fi
 
-          echo ""
-          echo "✅ FASTAPI IS ONLINE"
+          echo "✅ FastAPI started."
+          echo "PID: $API_PID"
 
 
-      # ------------------------------------------------------------
+      # =========================
       # START NGROK
-      # ------------------------------------------------------------
+      # =========================
       - name: Start Ngrok
-        shell: bash
         run: |
           set -e
 
-          rm -f ngrok.log ngrok.pid
-
-          ngrok http 8000 \
-            --log=stdout \
-            > ngrok.log 2>&1 &
+          nohup ngrok http 8000 \
+            --log=stdout > ngrok.log 2>&1 &
 
           NGROK_PID=$!
 
           echo "$NGROK_PID" > ngrok.pid
 
-          echo "Ngrok PID: $NGROK_PID"
-
           sleep 5
 
           if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-            echo "❌ Ngrok failed."
-            cat ngrok.log || true
+            echo "❌ Ngrok failed to start!"
+            cat ngrok.log
             exit 1
           fi
 
-          echo "✅ Ngrok is running."
+          echo "✅ Ngrok started."
 
 
-      # ------------------------------------------------------------
+      # =========================
       # GET PUBLIC URL
-      # ------------------------------------------------------------
+      # =========================
       - name: Get Public Ngrok URL
-        shell: bash
         run: |
-          set -u
+          set -e
 
-          PUBLIC_URL=""
+          for i in {1..20}; do
 
-          for i in $(seq 1 30); do
+            URL=$(curl -s http://127.0.0.1:4040/api/tunnels \
+              | python -c '
+          import sys,json
+          try:
+              data=json.load(sys.stdin)
+              tunnels=data.get("tunnels",[])
+              print(tunnels[0]["public_url"] if tunnels else "")
+          except:
+              print("")
+          ')
 
-            PUBLIC_URL=$(curl -s \
-              --max-time 5 \
-              http://127.0.0.1:4040/api/tunnels \
-              | jq -r '.tunnels[]? |
-                select(.proto=="https") |
-                .public_url' \
-              | head -n 1)
-
-            if [ -n "$PUBLIC_URL" ] && \
-               [ "$PUBLIC_URL" != "null" ]; then
+            if [ -n "$URL" ]; then
+              echo ""
+              echo "======================================"
+              echo "🌐 MAGMA API URL"
+              echo "$URL"
+              echo "======================================"
               break
             fi
 
-            echo "Waiting for Ngrok tunnel... $i/30"
+            echo "Waiting for Ngrok..."
             sleep 2
 
           done
 
-          if [ -z "$PUBLIC_URL" ] || \
-             [ "$PUBLIC_URL" = "null" ]; then
 
-            echo "❌ Ngrok URL not found."
-            cat ngrok.log || true
-            exit 1
-          fi
-
-          echo "PUBLIC_URL=$PUBLIC_URL" >> "$GITHUB_ENV"
-
-          echo ""
-          echo "======================================"
-          echo "🔥 MAGMA API URL"
-          echo "$PUBLIC_URL"
-          echo "======================================"
-
-
-      # ------------------------------------------------------------
+      # =========================
       # VERIFY API
-      # ------------------------------------------------------------
+      # =========================
       - name: Verify API
-        shell: bash
         run: |
-          set -u
+          set -e
 
-          echo "Checking public API..."
+          sleep 3
 
-          CODE=$(curl -L \
-            -s \
-            -o /tmp/api_response.txt \
-            -w "%{http_code}" \
-            --max-time 20 \
-            "$PUBLIC_URL/docs" || true)
-
-          echo "HTTP: $CODE"
-
-          if [ "$CODE" = "200" ]; then
-            echo "✅ Public API is working."
+          if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
+            echo "✅ API is responding."
           else
-            echo "❌ Public API verification failed."
-            cat /tmp/api_response.txt || true
-            exit 1
+            echo "⚠️ Root endpoint did not respond."
+            echo ""
+            echo "========== API LOG =========="
+            cat api.log
           fi
 
 
-      # ------------------------------------------------------------
-      # KEEP API ALIVE
-      # ------------------------------------------------------------
+      # =========================
+      # KEEP API RUNNING
+      # =========================
       - name: Keep API Running
-        shell: bash
         run: |
-          set -u
-
           echo "======================================"
-          echo "🔥 MAGMA API RUNNING"
+          echo "       MAGMA API IS RUNNING"
           echo "======================================"
 
-          echo "Public URL:"
-          echo "$PUBLIC_URL"
+          START=$(date +%s)
 
-          START_TIME=$(date +%s)
-
-          # About 5 hours 25 minutes.
-          # Auto-restart workflow starts the next run after this ends.
-          MAX_RUNTIME=$((325 * 60))
-
+          # Keep this run alive until GitHub's job timeout
           while true; do
 
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START_TIME))
-
-            if [ "$ELAPSED" -ge "$MAX_RUNTIME" ]; then
-              echo ""
-              echo "⏰ Planned run duration completed."
-              echo "Stopping this run cleanly."
-              break
-            fi
-
-
-            # ------------------------------------------------------
-            # FASTAPI PROCESS CHECK
-            # ------------------------------------------------------
             if [ -f api.pid ]; then
-
               API_PID=$(cat api.pid)
 
               if ! kill -0 "$API_PID" 2>/dev/null; then
-
+                echo "❌ FastAPI process stopped!"
                 echo ""
-                echo "⚠️ FastAPI stopped."
-                echo "🔄 Restarting..."
-
-                echo ""
-                echo "========== OLD API LOG =========="
-                tail -100 api.log || true
-                echo "================================="
-
-                rm -f api.log
-
-                python -m uvicorn app:app \
-                  --host 0.0.0.0 \
-                  --port 8000 \
-                  --log-level info \
-                  > api.log 2>&1 &
-
-                NEW_PID=$!
-
-                echo "$NEW_PID" > api.pid
-
-                sleep 8
-
-                if kill -0 "$NEW_PID" 2>/dev/null; then
-                  echo "✅ FastAPI restarted."
-                else
-                  echo "❌ FastAPI restart failed."
-                  cat api.log || true
-                  exit 1
-                fi
-
+                echo "========== API LOG =========="
+                cat api.log
+                exit 1
               fi
             fi
 
-
-            # ------------------------------------------------------
-            # NGROK PROCESS CHECK
-            # ------------------------------------------------------
             if [ -f ngrok.pid ]; then
-
               NGROK_PID=$(cat ngrok.pid)
 
               if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-
-                echo ""
-                echo "⚠️ Ngrok stopped."
-                echo "🔄 Restarting Ngrok..."
-
-                rm -f ngrok.log
-
-                ngrok http 8000 \
-                  --log=stdout \
-                  > ngrok.log 2>&1 &
-
-                NEW_NGROK_PID=$!
-
-                echo "$NEW_NGROK_PID" > ngrok.pid
-
-                sleep 8
-
-                if kill -0 "$NEW_NGROK_PID" 2>/dev/null; then
-                  echo "✅ Ngrok restarted."
-                else
-                  echo "❌ Ngrok restart failed."
-                  cat ngrok.log || true
-                  exit 1
-                fi
-
+                echo "❌ Ngrok process stopped!"
+                cat ngrok.log
+                exit 1
               fi
             fi
 
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START))
 
-            # ------------------------------------------------------
-            # LOCAL HEALTH CHECK
-            # ------------------------------------------------------
-            if curl -fsS \
-              --max-time 5 \
-              http://127.0.0.1:8000/docs \
-              >/dev/null 2>&1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FastAPI=OK | Ngrok=OK | Running=${ELAPSED}s"
 
-              echo "[$(date '+%H:%M:%S')] FastAPI=OK | Ngrok=OK"
-
-            else
-
-              echo "[$(date '+%H:%M:%S')] ⚠️ API health check failed."
-
-            fi
-
-
-            sleep 30
+            sleep 60
 
           done
 
 
-      # ------------------------------------------------------------
+      # =========================
       # CLEANUP
-      # ------------------------------------------------------------
+      # =========================
       - name: Cleanup
         if: always()
-        shell: bash
         run: |
           echo "Stopping services..."
-
-          if [ -f ngrok.pid ]; then
-            kill "$(cat ngrok.pid)" 2>/dev/null || true
-          fi
 
           if [ -f api.pid ]; then
             kill "$(cat api.pid)" 2>/dev/null || true
           fi
 
+          if [ -f ngrok.pid ]; then
+            kill "$(cat ngrok.pid)" 2>/dev/null || true
+          fi
+
           echo ""
           echo "========== FINAL API LOG =========="
-          tail -100 api.log 2>/dev/null || true
+          if [ -f api.log ]; then
+            tail -100 api.log || true
+          fi
 
           echo ""
           echo "========== FINAL NGROK LOG =========="
-          tail -50 ngrok.log 2>/dev/null || true
+          if [ -f ngrok.log ]; then
+            tail -50 ngrok.log || true
+          fi
 
-          echo ""
           echo "✅ Cleanup completed."
