@@ -1,0 +1,58 @@
+name: MAGMA API Auto Restart
+
+on:
+  workflow_run:
+    workflows:
+      - "MAGMA Music API"
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+jobs:
+  restart-api:
+    name: Start Next API Run
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Wait Before Restart
+        shell: bash
+        run: |
+          echo "⏳ Waiting 20 seconds..."
+          sleep 20
+
+
+      - name: Trigger Next MAGMA API Run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "🔄 STARTING NEXT MAGMA API RUN"
+          echo "======================================"
+
+          RESPONSE=$(curl -sS \
+            -o /tmp/dispatch_response.txt \
+            -w "%{http_code}" \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/$REPOSITORY/dispatches" \
+            -d '{"event_type":"restart-api"}')
+
+          echo "GitHub API HTTP: $RESPONSE"
+
+          if [ "$RESPONSE" = "204" ]; then
+            echo "✅ Next MAGMA API run triggered successfully."
+          else
+            echo "❌ Failed to trigger next run."
+            echo ""
+            cat /tmp/dispatch_response.txt || true
+            exit 1
+          fi
