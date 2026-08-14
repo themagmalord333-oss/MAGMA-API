@@ -1,9 +1,9 @@
-name: Auto Restart MAGMA Music API
+name: Auto Restart Local Manager
 
 on:
   workflow_run:
     workflows:
-      - "MAGMA Music API"
+      - "Local Host Manager Runner" # Ye main.yml ke 'name' se match hona chahiye
     types:
       - completed
 
@@ -13,34 +13,32 @@ permissions:
 
 jobs:
   restart:
+    if: >
+      ${{
+        github.event.workflow_run.conclusion == 'success' ||
+        github.event.workflow_run.conclusion == 'failure' ||
+        github.event.workflow_run.conclusion == 'cancelled' ||
+        github.event.workflow_run.conclusion == 'timed_out'
+      }}
+
     runs-on: ubuntu-latest
 
     steps:
-
-      # ============================================================
-      # WAIT FOR OLD RUN TO FULLY CLOSE
-      # ============================================================
-      - name: Wait for Previous Runner to Fully Close
-        shell: bash
+      - name: Wait for Previous Run to Fully Close
         run: |
-          echo "Previous MAGMA API workflow completed."
-          echo "Waiting 30 seconds..."
+          echo "Previous Local Manager run completed."
+          echo "Waiting 30 seconds to clear processes..."
           sleep 30
 
-      # ============================================================
-      # START NEW RUN
-      # ============================================================
-      - name: Start Next API Run
-        shell: bash
+      - name: Start Next Local Manager Run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -Eeuo pipefail
+          echo "Starting next Local Manager run..."
 
-          echo "Starting next MAGMA Music API run..."
-
-          gh workflow run "main.yml" \
+          # Ye seedha aapki main.yml file ko target karke restart karega
+          gh workflow run main.yml \
             --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch }}"
 
-          echo "New MAGMA Music API run dispatched successfully."
+          echo "Next Local Manager run started successfully."
