@@ -1,0 +1,86 @@
+name: Cleanup Failed Actions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete Failed And Cancelled Runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "     CLEANUP OLD FAILED ACTIONS"
+          echo "======================================"
+
+          PAGE=1
+
+          while true; do
+
+            RUNS=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPO/actions/runs?per_page=100&page=$PAGE")
+
+            COUNT=$(echo "$RUNS" | jq '.workflow_runs | length')
+
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+
+            echo "$RUNS" | jq -c '
+              .workflow_runs[]
+              | select(.status == "completed")
+              | {
+                  id,
+                  name,
+                  conclusion,
+                  created_at
+                }
+            ' | while read -r RUN; do
+
+              ID=$(echo "$RUN" | jq -r '.id')
+              NAME=$(echo "$RUN" | jq -r '.name')
+              CONCLUSION=$(echo "$RUN" | jq -r '.conclusion')
+              CREATED=$(echo "$RUN" | jq -r '.created_at')
+
+              case "$CONCLUSION" in
+
+                failure|cancelled|timed_out|action_required|stale|startup_failure|skipped)
+
+                  echo ""
+                  echo "Deleting:"
+                  echo "Workflow: $NAME"
+                  echo "Status:   $CONCLUSION"
+                  echo "Created:  $CREATED"
+                  echo "Run ID:   $ID"
+
+                  gh api \
+                    --method DELETE \
+                    -H "Accept: application/vnd.github+json" \
+                    "/repos/$REPO/actions/runs/$ID"
+
+                  ;;
+
+              esac
+
+            done
+
+            PAGE=$((PAGE + 1))
+
+          done
+
+          echo ""
+          echo "======================================"
+          echo "      CLEANUP FINISHED"
+          echo "======================================"
