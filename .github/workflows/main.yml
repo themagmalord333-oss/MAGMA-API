@@ -1,23 +1,4 @@
-name: MAGMA Music API
-
-on:
-  workflow_dispatch:
-
-jobs:
-  run-api:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-
-    steps:
-
-      # =========================
-      # CHECKOUT
-      # =========================
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-
-      # =========================
+# =========================
       # PYTHON
       # =========================
       - name: Setup Python
@@ -27,15 +8,40 @@ jobs:
 
 
       # =========================
-      # CHECK SYSTEM DEPENDENCIES
+      # INSTALL / CHECK SYSTEM TOOLS
       # =========================
-      - name: Check System Dependencies
+      - name: Setup System Tools
         run: |
           set -e
 
           echo "======================================"
-          echo "       CHECKING SYSTEM TOOLS"
+          echo "       SETTING UP SYSTEM TOOLS"
           echo "======================================"
+
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "FFmpeg not found. Installing static FFmpeg..."
+
+            curl -fL \
+              --retry 3 \
+              --connect-timeout 15 \
+              --max-time 180 \
+              https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+              -o /tmp/ffmpeg.tar.xz
+
+            mkdir -p /tmp/ffmpeg-static
+
+            tar -xJf /tmp/ffmpeg.tar.xz \
+              -C /tmp/ffmpeg-static \
+              --strip-components=1
+
+            sudo cp /tmp/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+            sudo cp /tmp/ffmpeg-static/ffprobe /usr/local/bin/ffprobe
+
+            sudo chmod +x /usr/local/bin/ffmpeg
+            sudo chmod +x /usr/local/bin/ffprobe
+
+            rm -rf /tmp/ffmpeg-static /tmp/ffmpeg.tar.xz
+          fi
 
           echo ""
           echo "FFmpeg:"
@@ -43,19 +49,9 @@ jobs:
           ffmpeg -version | head -1
 
           echo ""
-          echo "curl:"
-          command -v curl
-          curl --version | head -1
-
-          echo ""
-          echo "git:"
-          command -v git
-          git --version
-
-          echo ""
-          echo "unzip:"
-          command -v unzip
-          unzip -v | head -1
+          echo "FFprobe:"
+          command -v ffprobe
+          ffprobe -version | head -1
 
           echo ""
           echo "Node:"
@@ -68,8 +64,17 @@ jobs:
           npm --version
 
           echo ""
+          echo "curl:"
+          command -v curl
+
+          echo ""
+          echo "git:"
+          command -v git
+          git --version
+
+          echo ""
           echo "======================================"
-          echo "✅ ALL SYSTEM TOOLS AVAILABLE"
+          echo "✅ SYSTEM TOOLS READY"
           echo "======================================"
 
 
@@ -79,10 +84,6 @@ jobs:
       - name: Install Ngrok
         run: |
           set -e
-
-          echo "======================================"
-          echo "          INSTALLING NGROK"
-          echo "======================================"
 
           curl -fL \
             --retry 3 \
@@ -97,530 +98,4 @@ jobs:
 
           rm -f ngrok.tgz
 
-          echo ""
-          echo "Ngrok version:"
           ngrok version
-
-          echo ""
-          echo "✅ Ngrok installed successfully."
-
-
-      # =========================
-      # PYTHON DEPENDENCIES
-      # =========================
-      - name: Install Python Dependencies
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "    INSTALLING PYTHON DEPENDENCIES"
-          echo "======================================"
-
-          python -m pip install --upgrade pip
-
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-
-          pip install fastapi uvicorn python-dotenv
-
-          echo ""
-          echo "yt-dlp version:"
-          yt-dlp --version
-
-          echo ""
-          echo "✅ Python dependencies installed."
-
-
-      # =========================
-      # DOWNLOAD YOUTUBE COOKIES
-      # =========================
-      - name: Download YouTube Cookies
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       DOWNLOADING YOUTUBE COOKIES"
-          echo "======================================"
-
-          COOKIE_URL="https://raw.githubusercontent.com/themagmalord333-oss/COOKIE/main/cookies.txt"
-
-          curl -fL \
-            --retry 3 \
-            --connect-timeout 15 \
-            --max-time 120 \
-            "$COOKIE_URL" \
-            -o cookies.txt
-
-          if [ ! -s cookies.txt ]; then
-            echo "❌ cookies.txt is empty!"
-            exit 1
-          fi
-
-          echo "✅ cookies.txt downloaded."
-
-          echo ""
-          echo "Cookie file size:"
-          wc -c cookies.txt
-
-          echo ""
-          echo "Cookie line count:"
-          wc -l cookies.txt
-
-          echo ""
-          echo "Checking cookie format..."
-
-          if grep -q "^# Netscape HTTP Cookie File" cookies.txt; then
-            echo "✅ Netscape cookie format detected."
-          elif grep -Eq "youtube\.com|google\.com" cookies.txt; then
-            echo "✅ YouTube/Google cookie entries detected."
-          else
-            echo "❌ Cookie format could not be detected!"
-            exit 1
-          fi
-
-
-      # =========================
-      # TEST YT-DLP WITH COOKIES
-      # =========================
-      - name: Test yt-dlp YouTube With Cookies
-        run: |
-          set +e
-
-          echo "======================================"
-          echo "    YT-DLP COOKIE DIAGNOSTIC TEST"
-          echo "======================================"
-
-          echo ""
-          echo "yt-dlp version:"
-          yt-dlp --version
-
-          echo ""
-          echo "Node version:"
-          node --version
-
-          echo ""
-          echo "yt-dlp location:"
-          which yt-dlp
-
-          echo ""
-          echo "Cookie file:"
-          ls -lh cookies.txt
-
-          echo ""
-          echo "Testing YouTube video:"
-          echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
-
-          echo ""
-          echo "======================================"
-          echo "       YOUTUBE FORMAT TEST"
-          echo "======================================"
-
-          yt-dlp \
-            --cookies cookies.txt \
-            --js-runtimes node \
-            --no-playlist \
-            -F \
-            "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
-
-          RESULT=$?
-
-          echo ""
-          echo "======================================"
-
-          if [ "$RESULT" -eq 0 ]; then
-            echo "✅ YouTube extraction WITH COOKIES WORKS"
-          else
-            echo "❌ YouTube extraction WITH COOKIES FAILED"
-            echo "Exit code: $RESULT"
-          fi
-
-          echo "======================================"
-
-          if [ "$RESULT" -ne 0 ]; then
-            exit 1
-          fi
-
-
-      # =========================
-      # GENERATE ENVIRONMENT
-      # =========================
-      - name: Generate Environment
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-          MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       CREATING ENVIRONMENT"
-          echo "======================================"
-
-          rm -f .env
-          touch .env
-
-          # =========================
-          # APPLICATION
-          # =========================
-          echo "DOWNLOAD_WORKERS=3" >> .env
-          echo "APP_HOST=0.0.0.0" >> .env
-          echo "APP_PORT=8000" >> .env
-
-          # =========================
-          # COOKIE URL
-          # =========================
-          echo "COOKIE_URL=https://raw.githubusercontent.com/themagmalord333-oss/COOKIE/main/cookies.txt" >> .env
-
-          # =========================
-          # NGROK
-          # =========================
-          if [ -z "$NGROK_TOKEN" ]; then
-            echo "❌ NGROK_TOKEN secret is missing!"
-            exit 1
-          fi
-
-          echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
-
-          # =========================
-          # MONGODB
-          # =========================
-          if [ -n "$MONGO_DB_URI" ]; then
-            echo "MONGO_DB_URI=$MONGO_DB_URI" >> .env
-          fi
-
-          # =========================
-          # TELEGRAM API
-          # =========================
-          if [ -n "$API_ID" ]; then
-            echo "API_ID=$API_ID" >> .env
-          fi
-
-          if [ -n "$API_HASH" ]; then
-            echo "API_HASH=$API_HASH" >> .env
-          fi
-
-          echo ""
-          echo "✅ Environment prepared."
-          echo "DOWNLOAD_WORKERS=3"
-          echo "COOKIE_URL configured."
-
-
-      # =========================
-      # CONFIGURE NGROK
-      # =========================
-      - name: Configure Ngrok
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "        CONFIGURING NGROK"
-          echo "======================================"
-
-          ngrok config add-authtoken "$NGROK_TOKEN"
-
-          echo "✅ Ngrok configured successfully."
-
-
-      # =========================
-      # CHECK APP
-      # =========================
-      - name: Check app.py
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "           CHECKING APP"
-          echo "======================================"
-
-          if [ ! -f app.py ]; then
-            echo "❌ app.py not found!"
-            exit 1
-          fi
-
-          echo "✅ app.py found."
-
-          export DOWNLOAD_WORKERS=3
-
-          python - <<'PY'
-          import os
-
-          value = os.getenv("DOWNLOAD_WORKERS", "3")
-
-          try:
-              workers = int(value)
-          except (ValueError, TypeError):
-              workers = 3
-
-          print(f"DOWNLOAD_WORKERS={workers}")
-          PY
-
-
-      # =========================
-      # START FASTAPI
-      # =========================
-      - name: Start FastAPI
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-          MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          DOWNLOAD_WORKERS: "3"
-          APP_HOST: "0.0.0.0"
-          APP_PORT: "8000"
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "      STARTING MAGMA MUSIC API"
-          echo "======================================"
-
-          export DOWNLOAD_WORKERS=3
-
-          nohup python app.py > api.log 2>&1 &
-          API_PID=$!
-
-          echo "$API_PID" > api.pid
-
-          sleep 8
-
-          if ! kill -0 "$API_PID" 2>/dev/null; then
-            echo "❌ FastAPI failed to start!"
-            echo ""
-            echo "========== API LOG =========="
-            cat api.log
-            exit 1
-          fi
-
-          echo "✅ FastAPI started."
-          echo "PID: $API_PID"
-
-
-      # =========================
-      # START NGROK
-      # =========================
-      - name: Start Ngrok
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          STARTING NGROK"
-          echo "======================================"
-
-          nohup ngrok http 8000 \
-            --log=stdout > ngrok.log 2>&1 &
-
-          NGROK_PID=$!
-
-          echo "$NGROK_PID" > ngrok.pid
-
-          sleep 5
-
-          if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-            echo "❌ Ngrok failed to start!"
-            cat ngrok.log
-            exit 1
-          fi
-
-          echo "✅ Ngrok started."
-
-
-      # =========================
-      # GET PUBLIC URL
-      # =========================
-      - name: Get Public Ngrok URL
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       GETTING PUBLIC URL"
-          echo "======================================"
-
-          for i in {1..20}; do
-
-            URL=$(curl -s http://127.0.0.1:4040/api/tunnels \
-              | python -c '
-          import sys
-          import json
-
-          try:
-              data = json.load(sys.stdin)
-              tunnels = data.get("tunnels", [])
-
-              if tunnels:
-                  print(tunnels[0]["public_url"])
-              else:
-                  print("")
-
-          except Exception:
-              print("")
-          ')
-
-            if [ -n "$URL" ]; then
-              echo ""
-              echo "======================================"
-              echo "🌐 MAGMA API URL"
-              echo "$URL"
-              echo "======================================"
-
-              echo "MAGMA_API_URL=$URL" >> "$GITHUB_ENV"
-
-              break
-            fi
-
-            echo "Waiting for Ngrok..."
-            sleep 2
-
-          done
-
-
-      # =========================
-      # VERIFY API
-      # =========================
-      - name: Verify API
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          VERIFYING API"
-          echo "======================================"
-
-          sleep 3
-
-          if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-            echo "✅ API is responding."
-          else
-            echo "⚠️ Root endpoint did not respond."
-
-            echo ""
-            echo "========== API LOG =========="
-
-            if [ -f api.log ]; then
-              cat api.log
-            fi
-
-            exit 1
-          fi
-
-
-      # =========================
-      # KEEP API RUNNING
-      # =========================
-      - name: Keep API Running
-        run: |
-          echo "======================================"
-          echo "       MAGMA API IS RUNNING"
-          echo "======================================"
-
-          if [ -n "${MAGMA_API_URL:-}" ]; then
-            echo "🌐 URL: $MAGMA_API_URL"
-          fi
-
-          START=$(date +%s)
-
-          while true; do
-
-            # =========================
-            # CHECK FASTAPI
-            # =========================
-            if [ -f api.pid ]; then
-
-              API_PID=$(cat api.pid)
-
-              if ! kill -0 "$API_PID" 2>/dev/null; then
-
-                echo "❌ FastAPI process stopped!"
-
-                echo ""
-                echo "========== API LOG =========="
-
-                if [ -f api.log ]; then
-                  tail -200 api.log
-                fi
-
-                exit 1
-              fi
-
-            fi
-
-
-            # =========================
-            # CHECK NGROK
-            # =========================
-            if [ -f ngrok.pid ]; then
-
-              NGROK_PID=$(cat ngrok.pid)
-
-              if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-
-                echo "❌ Ngrok process stopped!"
-
-                echo ""
-                echo "========== NGROK LOG =========="
-
-                if [ -f ngrok.log ]; then
-                  tail -100 ngrok.log
-                fi
-
-                exit 1
-              fi
-
-            fi
-
-
-            # =========================
-            # STATUS
-            # =========================
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START))
-
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FastAPI=OK | Ngrok=OK | Running=${ELAPSED}s"
-
-            sleep 60
-
-          done
-
-
-      # =========================
-      # CLEANUP
-      # =========================
-      - name: Cleanup
-        if: always()
-        run: |
-
-          echo "======================================"
-          echo "          CLEANUP"
-          echo "======================================"
-
-          echo "Stopping services..."
-
-          if [ -f api.pid ]; then
-            kill "$(cat api.pid)" 2>/dev/null || true
-          fi
-
-          if [ -f ngrok.pid ]; then
-            kill "$(cat ngrok.pid)" 2>/dev/null || true
-          fi
-
-
-          echo ""
-          echo "========== FINAL API LOG =========="
-
-          if [ -f api.log ]; then
-            tail -100 api.log || true
-          fi
-
-
-          echo ""
-          echo "========== FINAL NGROK LOG =========="
-
-          if [ -f ngrok.log ]; then
-            tail -50 ngrok.log || true
-          fi
-
-
-          echo ""
-          echo "✅ Cleanup completed."
