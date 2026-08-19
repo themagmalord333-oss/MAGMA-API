@@ -2,8 +2,7 @@ name: MAGMA API Auto Restart
 
 on:
   workflow_run:
-    workflows:
-      - "MAGMA Music API"
+    workflows: ["MAGMA Music API"]
     types:
       - completed
 
@@ -12,65 +11,22 @@ permissions:
   contents: read
 
 jobs:
-
-  restart:
-
-    # Only restart when the main API job
-    # reaches GitHub's timeout.
-    if: >
-      github.event.workflow_run.name == 'MAGMA Music API' &&
-      github.event.workflow_run.conclusion == 'timed_out'
-
+  restart-api:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ======================================
-      # SHOW PREVIOUS RUN
-      # ======================================
-      - name: Show Previous Run
-        run: |
-          echo "======================================"
-          echo "       MAGMA AUTO RESTART"
-          echo "======================================"
-
-          echo "Workflow:"
-          echo "${{ github.event.workflow_run.name }}"
-
-          echo "Conclusion:"
-          echo "${{ github.event.workflow_run.conclusion }}"
-
-          echo "Run ID:"
-          echo "${{ github.event.workflow_run.id }}"
-
-
-      # ======================================
-      # WAIT
-      # ======================================
       - name: Wait Before Restart
-        run: |
-          echo "Waiting 20 seconds..."
-          sleep 20
+        run: sleep 20
 
-
-      # ======================================
-      # START MAIN WORKFLOW
-      # ======================================
-      - name: Start MAGMA Music API Again
+      - name: Start Next API Run
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PERSONAL_TOKEN }}
         run: |
-          set -e
-
-          echo "======================================"
-          echo "     STARTING MAGMA MUSIC API"
-          echo "======================================"
+          echo "Previous MAGMA API run completed."
+          echo "Starting next MAGMA API run..."
 
           gh workflow run main.yml \
             --repo "${{ github.repository }}" \
             --ref main
 
-          echo ""
-          echo "======================================"
-          echo "✅ NEW MAGMA API RUN STARTED"
-          echo "======================================"
+          echo "✅ Next MAGMA API run triggered successfully."
