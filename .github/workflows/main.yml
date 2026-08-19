@@ -289,4 +289,28 @@ jobs:
 
           echo ""
           echo "Possible causes:"
-          echo "1. cookies.txt
+          echo "1. cookies.txt expired"
+          echo "2. YouTube rejected runner IP"
+          echo "3. Cookie format/problem"
+          echo "4. yt-dlp/YouTube extractor issue"
+          echo "5. YouTube bot verification"
+
+          exit 1
+
+
+      # =========================
+      # FINAL SUMMARY
+      # =========================
+      - name: Final Diagnostic Summary
+        if: always()
+        shell: bash
+        run: |
+          echo ""
+          echo "======================================"
+          echo "       MAGMA DIAGNOSTIC FINISHED"
+          echo "======================================"
+
+          echo ""
+          echo "This workflow only performed checks."
+          echo "It did NOT start FastAPI."
+          echo "It did NOT start Ngrok."
