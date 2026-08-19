@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Delete Failed And Cancelled Runs
+
+      - name: Cleanup Old Action Runs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -22,7 +23,7 @@ jobs:
           set -e
 
           echo "======================================"
-          echo "     MAGMA ACTION CLEANUP"
+          echo "       MAGMA ACTION CLEANUP"
           echo "======================================"
 
           gh api \
@@ -32,33 +33,46 @@ jobs:
             --jq '
               .workflow_runs[]
               | select(
-                  .name == "MAGMA Music API"
-                  and .status == "completed"
+                  .status == "completed"
                   and .conclusion != "success"
+                  and .name != "Cleanup Failed Actions"
                 )
-              | [.id, .conclusion, .created_at]
+              | [.id, .name, .conclusion, .created_at]
               | @tsv
             ' > /tmp/runs.txt
 
+          echo ""
+          echo "Runs found:"
+          cat /tmp/runs.txt || true
+
           if [ ! -s /tmp/runs.txt ]; then
-            echo "✅ No failed/cancelled MAGMA runs found."
+            echo ""
+            echo "✅ No failed/cancelled runs found."
             exit 0
           fi
 
-          while IFS=$'\t' read -r RUN_ID CONCLUSION CREATED; do
+          while IFS=$'\t' read -r RUN_ID NAME CONCLUSION CREATED; do
 
             echo ""
-            echo "Deleting run:"
+            echo "--------------------------------------"
+            echo "Deleting:"
             echo "ID:         $RUN_ID"
+            echo "Workflow:   $NAME"
             echo "Conclusion: $CONCLUSION"
             echo "Created:    $CREATED"
 
-            gh api \
+            if gh api \
               --method DELETE \
               -H "Accept: application/vnd.github+json" \
-              "/repos/$REPO/actions/runs/$RUN_ID"
+              "/repos/$REPO/actions/runs/$RUN_ID"; then
 
-            echo "✅ Deleted: $RUN_ID"
+              echo "✅ Deleted $RUN_ID"
+
+            else
+
+              echo "⚠️ Could not delete $RUN_ID"
+
+            fi
 
           done < /tmp/runs.txt
 
