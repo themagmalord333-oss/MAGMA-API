@@ -233,17 +233,63 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         logger.info(f"Loaded cookies from {COOKIES_FILE}")
     return opts
 
+def extract_youtube_with_fallback(url: str, opts: Dict[str, Any], download: bool = True) -> Dict[str, Any]:
+    """Attempts extraction with default client first, falls back to web_embedded if blocked."""
+    strategies = [
+        (
+            "default",
+            {}
+        ),
+        (
+            "default-web_embedded",
+            {
+                "youtube": {
+                    "player_client": [
+                        "default",
+                        "web_embedded"
+                    ]
+                }
+            }
+        ),
+    ]
+
+    last_error = None
+
+    for name, extractor_args in strategies:
+        try:
+            attempt_opts = dict(opts)
+
+            if extractor_args:
+                attempt_opts["extractor_args"] = extractor_args
+
+            logger.info(f"▶️ YouTube strategy: {name}")
+
+            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                info = ydl.extract_info(
+                    url,
+                    download=download
+                )
+
+            logger.info(f"✅ YouTube extraction successful: {name}")
+            return info
+
+        except yt_dlp.utils.DownloadError as e:
+            last_error = e
+            logger.warning(f"❌ YouTube strategy failed: {name} | {e}")
+
+    raise RuntimeError(f"All YouTube extraction strategies failed: {last_error}")
+
+
 def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
     opts = get_base_ydl_opts()
     opts['skip_download'] = True
     try:  
-        with yt_dlp.YoutubeDL(opts) as ydl:  
-            info = ydl.extract_info(url, download=False)  
-            return {  
-                "title": info.get("title"),  
-                "thumbnail": info.get("thumbnail"),  
-                "videoId": info.get("id")  
-            }  
+        info = extract_youtube_with_fallback(url, opts, download=False)
+        return {  
+            "title": info.get("title"),  
+            "thumbnail": info.get("thumbnail"),  
+            "videoId": info.get("id")  
+        }  
     except Exception as e:  
         logger.error(f"Thumbnail fetch error: {e}")  
         raise RuntimeError(f"Failed to fetch thumbnail: {str(e)}")
@@ -294,58 +340,60 @@ def download_audio_sync(url: str) -> Dict[str, Any]:
 
     # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
     opts.update({  
-        'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
+        'format': '140/ba[ext=m4a]/bestaudio/best', 
         'writethumbnail': False,
         'postprocessors': [{  
             'key': 'FFmpegExtractAudio',  
             'preferredcodec': 'mp3',  
             'preferredquality': '192',  
         }],
-        'extractor_args': {'youtube': ['player_client=ios,android,web']}, # iOS/Android bypasses JS throttling
         'concurrent_fragment_downloads': 15,    
-        'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
+        'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
         'noprogress': True,
         'quiet': True,
         'no_warnings': True,
-        'updatetime': False,                    # Stops wasted Disk I/O modifying timestamps
+        'updatetime': False,                    
         'clean_infojson': False,
         'retries': 5,                           
         'fragment_retries': 5,                  
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0',                    # Force FFmpeg to use ALL CPU cores for MP3 encoding
-            '-vn', '-sn'                        # Strictly strip video/subs inside FFmpeg processing
+            '-threads', '0',                    
+            '-vn', '-sn'                        
         ]
     })  
 
     try:  
-        with yt_dlp.YoutubeDL(opts) as ydl:  
-            info = ydl.extract_info(url, download=True)  
+        info = extract_youtube_with_fallback(url, opts, download=True)
+        
+        # We need a yt-dlp instance just to prepare the filename format safely
+        with yt_dlp.YoutubeDL(opts) as ydl:
             filename = ydl.prepare_filename(info)  
-            base_path, _ = os.path.splitext(filename)  
-            final_path = f"{base_path}.mp3"  
+            
+        base_path, _ = os.path.splitext(filename)  
+        final_path = f"{base_path}.mp3"  
 
-            if not os.path.isfile(final_path) or os.path.getsize(final_path) == 0:  
-                raise RuntimeError("Downloaded file is missing or empty.")  
+        if not os.path.isfile(final_path) or os.path.getsize(final_path) == 0:  
+            raise RuntimeError("Downloaded file is missing or empty.")  
 
-            logger.info(f"Successfully downloaded audio: {final_path}")  
+        logger.info(f"Successfully downloaded audio: {final_path}")  
 
-            response_data = {  
-                "status": True,  
-                "title": info.get("title", ""),  
-                "duration": info.get("duration", 0),  
-                "thumbnail": info.get("thumbnail", ""),  
-                "filename": os.path.basename(final_path),  
-                "path": final_path,  
-                "download_url": f"/files/{os.path.basename(final_path)}",  
-                "videoId": info.get("id"),  
-                "uploader": info.get("uploader"),  
-                "filesize": os.path.getsize(final_path)  
-            }
+        response_data = {  
+            "status": True,  
+            "title": info.get("title", ""),  
+            "duration": info.get("duration", 0),  
+            "thumbnail": info.get("thumbnail", ""),  
+            "filename": os.path.basename(final_path),  
+            "path": final_path,  
+            "download_url": f"/files/{os.path.basename(final_path)}",  
+            "videoId": info.get("id"),  
+            "uploader": info.get("uploader"),  
+            "filesize": os.path.getsize(final_path)  
+        }
 
-            save_cached_metadata(response_data, "mp3")
-            return response_data
+        save_cached_metadata(response_data, "mp3")
+        return response_data
 
     except yt_dlp.utils.DownloadError as e:  
         logger.error(f"yt-dlp error downloading audio for {url}: {e}")  
@@ -404,7 +452,6 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'merge_output_format': 'mp4',
         'writethumbnail': False,
         'embedthumbnail': False,
-        'extractor_args': {'youtube': ['player_client=ios,android,web']},
         'concurrent_fragment_downloads': 15,    
         'http_chunk_size': 10485760,            
         'nocheckcertificate': True,
@@ -417,44 +464,45 @@ def download_video_sync(url: str) -> Dict[str, Any]:
         'fragment_retries': 5,
         'socket_timeout': 15,
         'postprocessor_args': [
-            '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
+            '-threads', '0'                     
         ]
-        # ⚠️ Removed FFmpegVideoConvertor: The merge_output_format='mp4' flag merges natively without wasting CPU re-encoding.
     })  
 
     try:  
-        with yt_dlp.YoutubeDL(opts) as ydl:  
-            info = ydl.extract_info(url, download=True)  
+        info = extract_youtube_with_fallback(url, opts, download=True)
+        
+        with yt_dlp.YoutubeDL(opts) as ydl:
             filename = ydl.prepare_filename(info)  
-            base_path, _ = os.path.splitext(filename)  
+            
+        base_path, _ = os.path.splitext(filename)  
 
-            final_path = f"{base_path}.mp4"
-            for ext in [".mp4", ".webm", ".mkv"]:
-                test_path = f"{base_path}{ext}"
-                if os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
-                    final_path = test_path
-                    break
+        final_path = f"{base_path}.mp4"
+        for ext in [".mp4", ".webm", ".mkv"]:
+            test_path = f"{base_path}{ext}"
+            if os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
+                final_path = test_path
+                break
 
-            if not (os.path.isfile(final_path) and os.path.getsize(final_path) > 0):  
-                raise RuntimeError("Downloaded file not found or is empty.")  
+        if not (os.path.isfile(final_path) and os.path.getsize(final_path) > 0):  
+            raise RuntimeError("Downloaded file not found or is empty.")  
 
-            logger.info(f"Successfully downloaded video: {final_path}")  
+        logger.info(f"Successfully downloaded video: {final_path}")  
 
-            response_data = {  
-                "status": True,  
-                "title": info.get("title", ""),  
-                "thumbnail": info.get("thumbnail", ""),  
-                "filename": os.path.basename(final_path),  
-                "path": final_path,  
-                "download_url": f"/files/{os.path.basename(final_path)}",  
-                "duration": info.get("duration", 0),  
-                "videoId": info.get("id"),  
-                "uploader": info.get("uploader"),  
-                "filesize": os.path.getsize(final_path)  
-            }
+        response_data = {  
+            "status": True,  
+            "title": info.get("title", ""),  
+            "thumbnail": info.get("thumbnail", ""),  
+            "filename": os.path.basename(final_path),  
+            "path": final_path,  
+            "download_url": f"/files/{os.path.basename(final_path)}",  
+            "duration": info.get("duration", 0),  
+            "videoId": info.get("id"),  
+            "uploader": info.get("uploader"),  
+            "filesize": os.path.getsize(final_path)  
+        }
 
-            save_cached_metadata(response_data, "mp4")
-            return response_data
+        save_cached_metadata(response_data, "mp4")
+        return response_data
 
     except yt_dlp.utils.DownloadError as e:  
         logger.error(f"yt-dlp error downloading video for {url}: {e}")  
