@@ -4,27 +4,44 @@ on:
   workflow_dispatch:
 
   schedule:
+    # Every hour at minute 17
     - cron: "17 * * * *"
 
 permissions:
   actions: write
+  contents: read
 
 jobs:
+
   cleanup:
+
     runs-on: ubuntu-latest
 
     steps:
 
+      # ======================================
+      # CLEAN FAILED RUNS
+      # ======================================
       - name: Cleanup Old Action Runs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+
+        shell: bash
+
         run: |
           set -e
 
           echo "======================================"
           echo "       MAGMA ACTION CLEANUP"
           echo "======================================"
+
+          echo ""
+          echo "Repository:"
+          echo "$REPO"
+
+          echo ""
+          echo "Finding failed/cancelled runs..."
 
           gh api \
             --paginate \
@@ -33,48 +50,89 @@ jobs:
             --jq '
               .workflow_runs[]
               | select(
-                  .status == "completed"
-                  and .conclusion != "success"
-                  and .name != "Cleanup Failed Actions"
+                  (.status == "completed")
+                  and
+                  (
+                    .conclusion == "failure"
+                    or
+                    .conclusion == "cancelled"
+                    or
+                    .conclusion == "timed_out"
+                  )
+                  and
+                  .name != "Cleanup Failed Actions"
                 )
-              | [.id, .name, .conclusion, .created_at]
+              | [
+                  .id,
+                  .name,
+                  .conclusion,
+                  .created_at
+                ]
               | @tsv
             ' > /tmp/runs.txt
 
+
           echo ""
-          echo "Runs found:"
-          cat /tmp/runs.txt || true
+          echo "======================================"
+          echo "          RUNS FOUND"
+          echo "======================================"
+
 
           if [ ! -s /tmp/runs.txt ]; then
-            echo ""
+
             echo "✅ No failed/cancelled runs found."
+
             exit 0
+
           fi
+
+
+          cat /tmp/runs.txt
+
+
+          echo ""
+          echo "======================================"
+          echo "       DELETING OLD RUNS"
+          echo "======================================"
+
 
           while IFS=$'\t' read -r RUN_ID NAME CONCLUSION CREATED; do
 
+            if [ -z "$RUN_ID" ]; then
+              continue
+            fi
+
             echo ""
             echo "--------------------------------------"
-            echo "Deleting:"
-            echo "ID:         $RUN_ID"
-            echo "Workflow:   $NAME"
-            echo "Conclusion: $CONCLUSION"
-            echo "Created:    $CREATED"
+
+            echo "Run ID:"
+            echo "$RUN_ID"
+
+            echo "Workflow:"
+            echo "$NAME"
+
+            echo "Conclusion:"
+            echo "$CONCLUSION"
+
+            echo "Created:"
+            echo "$CREATED"
+
 
             if gh api \
               --method DELETE \
               -H "Accept: application/vnd.github+json" \
               "/repos/$REPO/actions/runs/$RUN_ID"; then
 
-              echo "✅ Deleted $RUN_ID"
+              echo "✅ Deleted run $RUN_ID"
 
             else
 
-              echo "⚠️ Could not delete $RUN_ID"
+              echo "⚠️ Could not delete run $RUN_ID"
 
             fi
 
           done < /tmp/runs.txt
+
 
           echo ""
           echo "======================================"
