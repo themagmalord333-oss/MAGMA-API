@@ -31,6 +31,8 @@ jobs:
       # =========================
       - name: Install System Dependencies
         run: |
+          set -e
+
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl git unzip nodejs npm
 
@@ -53,6 +55,8 @@ jobs:
       # =========================
       - name: Install Ngrok
         run: |
+          set -e
+
           curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
             | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
 
@@ -70,6 +74,8 @@ jobs:
       # =========================
       - name: Install Python Dependencies
         run: |
+          set -e
+
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
@@ -80,14 +86,72 @@ jobs:
 
 
       # =========================
-      # TEST YT-DLP / YOUTUBE
+      # DOWNLOAD COOKIES
       # =========================
-      - name: Test yt-dlp YouTube
+      - name: Download YouTube Cookies
+        env:
+          COOKIE_URL: ${{ secrets.COOKIE_URL }}
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "       DOWNLOADING YOUTUBE COOKIES"
+          echo "======================================"
+
+          if [ -z "$COOKIE_URL" ]; then
+            echo "❌ COOKIE_URL secret is missing!"
+            exit 1
+          fi
+
+          curl -fL \
+            --retry 3 \
+            --connect-timeout 15 \
+            --max-time 120 \
+            "$COOKIE_URL" \
+            -o cookies.txt
+
+          if [ ! -s cookies.txt ]; then
+            echo "❌ cookies.txt is empty!"
+            exit 1
+          fi
+
+          echo "✅ cookies.txt downloaded."
+
+          echo ""
+          echo "Cookie file size:"
+          wc -c cookies.txt
+
+          echo ""
+          echo "Cookie line count:"
+          wc -l cookies.txt
+
+          echo ""
+          echo "Cookie format check:"
+
+          if grep -q "^# Netscape HTTP Cookie File" cookies.txt; then
+            echo "✅ Netscape cookie format detected."
+          else
+            echo "⚠️ Netscape header not found."
+            echo "Checking for cookie entries..."
+
+            if grep -Eq "youtube\.com|google\.com" cookies.txt; then
+              echo "✅ YouTube/Google cookie entries detected."
+            else
+              echo "❌ No obvious YouTube/Google cookie entries found."
+              exit 1
+            fi
+          fi
+
+
+      # =========================
+      # TEST YT-DLP WITH COOKIES
+      # =========================
+      - name: Test yt-dlp YouTube With Cookies
         run: |
           set +e
 
           echo "======================================"
-          echo "       YT-DLP DIAGNOSTIC TEST"
+          echo "    YT-DLP COOKIE DIAGNOSTIC TEST"
           echo "======================================"
 
           echo ""
@@ -103,7 +167,11 @@ jobs:
           which yt-dlp
 
           echo ""
-          echo "Testing YouTube video:"
+          echo "Cookie file:"
+          ls -lh cookies.txt
+
+          echo ""
+          echo "Testing YouTube with cookies:"
           echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
 
           echo ""
@@ -112,8 +180,10 @@ jobs:
           echo "======================================"
 
           yt-dlp \
+            --cookies cookies.txt \
             --js-runtimes node \
             --no-playlist \
+            --verbose \
             -F \
             "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
 
@@ -123,16 +193,17 @@ jobs:
           echo "======================================"
 
           if [ $RESULT -eq 0 ]; then
-            echo "✅ YouTube extraction WORKS"
+            echo "✅ YouTube extraction WITH COOKIES WORKS"
           else
-            echo "❌ YouTube extraction FAILED"
+            echo "❌ YouTube extraction WITH COOKIES FAILED"
             echo "Exit code: $RESULT"
           fi
 
           echo "======================================"
 
-          # Diagnostic step ko workflow fail nahi karne denge.
-          exit 0
+          if [ $RESULT -ne 0 ]; then
+            exit 1
+          fi
 
 
       # =========================
@@ -144,6 +215,7 @@ jobs:
           MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
+          COOKIE_URL: ${{ secrets.COOKIE_URL }}
         run: |
           set -e
 
@@ -152,12 +224,10 @@ jobs:
           rm -f .env
           touch .env
 
-          # Required application settings
           echo "DOWNLOAD_WORKERS=3" >> .env
           echo "APP_HOST=0.0.0.0" >> .env
           echo "APP_PORT=8000" >> .env
 
-          # Ngrok
           if [ -z "$NGROK_TOKEN" ]; then
             echo "❌ NGROK_TOKEN secret is missing!"
             exit 1
@@ -165,18 +235,22 @@ jobs:
 
           echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
 
-          # MongoDB
           if [ -n "$MONGO_DB_URI" ]; then
             echo "MONGO_DB_URI=$MONGO_DB_URI" >> .env
           fi
 
-          # Telegram API
           if [ -n "$API_ID" ]; then
             echo "API_ID=$API_ID" >> .env
           fi
 
           if [ -n "$API_HASH" ]; then
             echo "API_HASH=$API_HASH" >> .env
+          fi
+
+          # COOKIE_URL is intentionally kept in .env
+          # so app.py can use it on startup.
+          if [ -n "$COOKIE_URL" ]; then
+            echo "COOKIE_URL=$COOKIE_URL" >> .env
           fi
 
           echo ""
@@ -212,7 +286,6 @@ jobs:
 
           echo "✅ app.py found."
 
-          # Make sure DOWNLOAD_WORKERS can never receive NGROK_TOKEN
           export DOWNLOAD_WORKERS=3
 
           python - <<'PY'
@@ -238,6 +311,7 @@ jobs:
           MONGO_DB_URI: ${{ secrets.MONGO_DB_URI }}
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
+          COOKIE_URL: ${{ secrets.COOKIE_URL }}
           DOWNLOAD_WORKERS: "3"
           APP_HOST: "0.0.0.0"
           APP_PORT: "8000"
@@ -359,7 +433,6 @@ jobs:
 
           START=$(date +%s)
 
-          # Keep this run alive until GitHub's job timeout
           while true; do
 
             if [ -f api.pid ]; then
@@ -412,12 +485,14 @@ jobs:
 
           echo ""
           echo "========== FINAL API LOG =========="
+
           if [ -f api.log ]; then
             tail -100 api.log || true
           fi
 
           echo ""
           echo "========== FINAL NGROK LOG =========="
+
           if [ -f ngrok.log ]; then
             tail -50 ngrok.log || true
           fi
