@@ -1,640 +1,73 @@
-name: MAGMA Music API
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  run-api:
-    runs-on: ubuntu-latest
-
-    timeout-minutes: 350
-
-    steps:
-
-      # ======================================
-      # CHECKOUT
-      # ======================================
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-
-      # ======================================
-      # PYTHON
-      # ======================================
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-
-      # ======================================
-      # NODE.JS
-      # ======================================
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-
-      # ======================================
-      # SYSTEM TOOLS
-      # ======================================
-      - name: Setup System Tools
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       SETTING UP SYSTEM TOOLS"
-          echo "======================================"
-
-          echo ""
-          echo "Checking FFmpeg..."
-
-          if command -v ffmpeg >/dev/null 2>&1; then
-            echo "✅ FFmpeg already installed."
-          else
-            echo "⚠️ FFmpeg not found."
-            echo "Installing FFmpeg..."
-
-            sudo apt-get update -y
-            sudo apt-get install -y ffmpeg
-          fi
-
-          echo ""
-          echo "FFmpeg:"
-          command -v ffmpeg
-          ffmpeg -version | head -1
-
-          echo ""
-          echo "FFprobe:"
-          command -v ffprobe
-          ffprobe -version | head -1
-
-          echo ""
-          echo "Node:"
-          node --version
-
-          echo ""
-          echo "npm:"
-          npm --version
-
-          echo ""
-          echo "curl:"
-          curl --version | head -1
-
-          echo ""
-          echo "git:"
-          git --version
-
-          echo ""
-          echo "======================================"
-          echo "✅ SYSTEM TOOLS READY"
-          echo "======================================"
-
-
-      # ======================================
-      # NGROK
-      # ======================================
-      - name: Install Ngrok
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          INSTALLING NGROK"
-          echo "======================================"
-
-          curl -fsSL \
-            https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
-            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
-
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
-            | sudo tee /etc/apt/sources.list.d/ngrok.list >/dev/null
-
-          sudo apt-get update -y
-          sudo apt-get install -y ngrok
-
-          ngrok version
-
-          echo "✅ Ngrok installed."
-
-
-      # ======================================
-      # PYTHON DEPENDENCIES
-      # ======================================
-      - name: Install Python Dependencies
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       INSTALLING PYTHON PACKAGES"
-          echo "======================================"
-
-          python -m pip install --upgrade pip
-
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-
-          pip install --upgrade \
-            yt-dlp \
-            yt-dlp-ejs \
-            ytmusicapi \
-            fastapi \
-            uvicorn \
-            python-dotenv
-
-          echo ""
-          echo "yt-dlp:"
-          yt-dlp --version
-
-          echo ""
-          echo "Python:"
-          python --version
-
-          echo ""
-          echo "======================================"
-          echo "✅ PYTHON DEPENDENCIES READY"
-          echo "======================================"
-
-
-      # ======================================
-      # CHECK COOKIES
-      # ======================================
-      - name: Check YouTube Cookies
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       CHECKING YOUTUBE COOKIES"
-          echo "======================================"
-
-          if [ ! -f cookies.txt ]; then
-            echo "❌ cookies.txt not found!"
-            echo ""
-            echo "Expected:"
-            echo "cookies.txt"
-            exit 1
-          fi
-
-          if [ ! -s cookies.txt ]; then
-            echo "❌ cookies.txt is empty!"
-            exit 1
-          fi
-
-          echo "✅ cookies.txt found."
-
-          echo ""
-          echo "Cookie file size:"
-          wc -c cookies.txt
-
-          echo ""
-          echo "Cookie file lines:"
-          wc -l cookies.txt
-
-          echo ""
-          echo "Checking Netscape format..."
-
-          if grep -q "Netscape HTTP Cookie File" cookies.txt; then
-            echo "✅ Netscape cookie format detected."
-          else
-            echo "⚠️ Netscape header not found."
-            echo "Continuing anyway..."
-          fi
-
-
-      # ======================================
-      # TEST YOUTUBE
-      # ======================================
-      - name: Test yt-dlp YouTube
-        shell: bash
-        run: |
-          set +e
-
-          echo "======================================"
-          echo "       YT-DLP YOUTUBE TEST"
-          echo "======================================"
-
-          echo ""
-          echo "yt-dlp:"
-          yt-dlp --version
-
-          echo ""
-          echo "Node:"
-          node --version
-
-          echo ""
-          echo "yt-dlp location:"
-          command -v yt-dlp
-
-          echo ""
-          echo "Testing:"
-          echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
-
-          echo ""
-          echo "======================================"
-          echo "       YOUTUBE FORMAT TEST"
-          echo "======================================"
-
-          yt-dlp \
-            --cookies cookies.txt \
-            --js-runtimes node \
-            --remote-components ejs:github \
-            --no-playlist \
-            -F \
-            "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
-
-          EXIT_CODE=$?
-
-          echo ""
-          echo "Exit code: $EXIT_CODE"
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo ""
-            echo "⚠️ YouTube test failed."
-            echo "The API will NOT be started."
-            exit "$EXIT_CODE"
-          fi
-
-          echo ""
-          echo "✅ YouTube extraction test passed."
-
-
-      # ======================================
-      # ENVIRONMENT
-      # ======================================
-      - name: Generate Environment
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       GENERATING ENVIRONMENT"
-          echo "======================================"
-
-          rm -f .env
-          touch .env
-
-          echo "DOWNLOAD_DIR=downloads" >> .env
-          echo "CACHE_EXPIRE_HOURS=24" >> .env
-          echo "MAX_VIDEO_QUALITY=720" >> .env
-          echo "PORT=8000" >> .env
-          echo "DOWNLOAD_WORKERS=3" >> .env
-
-          if [ -z "$NGROK_TOKEN" ]; then
-            echo "❌ NGROK_TOKEN secret is missing!"
-            exit 1
-          fi
-
-          echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
-
-          echo ""
-          echo "✅ Environment generated."
-
-
-      # ======================================
-      # CONFIGURE NGROK
-      # ======================================
-      - name: Configure Ngrok
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-        shell: bash
-        run: |
-          set -e
-
-          ngrok config add-authtoken "$NGROK_TOKEN"
-
-          echo "✅ Ngrok configured."
-
-
-      # ======================================
-      # CHECK APP
-      # ======================================
-      - name: Check app.py
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          CHECKING APPLICATION"
-          echo "======================================"
-
-          if [ ! -f app.py ]; then
-            echo "❌ app.py not found!"
-            exit 1
-          fi
-
-          python -m py_compile app.py
-
-          echo "✅ app.py syntax OK."
-
-
-      # ======================================
-      # START FASTAPI
-      # ======================================
-      - name: Start FastAPI
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       STARTING MAGMA MUSIC API"
-          echo "======================================"
-
-          nohup python app.py > api.log 2>&1 &
-
-          API_PID=$!
-
-          echo "$API_PID" > api.pid
-
-          echo "FastAPI PID: $API_PID"
-
-          echo ""
-          echo "Waiting for API..."
-
-          for i in {1..30}; do
-
-            if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-              echo "✅ FastAPI is responding."
-              break
-            fi
-
-            if ! kill -0 "$API_PID" 2>/dev/null; then
-              echo "❌ FastAPI stopped!"
-
-              echo ""
-              echo "========== API LOG =========="
-              cat api.log || true
-
-              exit 1
-            fi
-
-            echo "Waiting... $i/30"
-            sleep 2
-
-          done
-
-          if ! curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
-            echo "❌ FastAPI did not respond."
-
-            echo ""
-            echo "========== API LOG =========="
-            cat api.log || true
-
-            exit 1
-          fi
-
-
-      # ======================================
-      # START NGROK
-      # ======================================
-      - name: Start Ngrok
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          STARTING NGROK"
-          echo "======================================"
-
-          nohup ngrok http 8000 \
-            --log=stdout \
-            > ngrok.log 2>&1 &
-
-          NGROK_PID=$!
-
-          echo "$NGROK_PID" > ngrok.pid
-
-          sleep 5
-
-          if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-            echo "❌ Ngrok failed!"
-
-            cat ngrok.log || true
-
-            exit 1
-          fi
-
-          echo "✅ Ngrok started."
-
-
-      # ======================================
-      # GET PUBLIC URL
-      # ======================================
-      - name: Get Public Ngrok URL
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "         GETTING NGROK URL"
-          echo "======================================"
-
-          URL=""
-
-          for i in {1..30}; do
-
-            URL=$(curl -s \
-              http://127.0.0.1:4040/api/tunnels \
-              | python -c '
-          import sys
-          import json
-
-          try:
-              data = json.load(sys.stdin)
-
-              for tunnel in data.get("tunnels", []):
-                  url = tunnel.get("public_url", "")
-
-                  if url.startswith("https://"):
-                      print(url)
-                      break
-          except Exception:
-              pass
-          ')
-
-            if [ -n "$URL" ]; then
-              break
-            fi
-
-            echo "Waiting for Ngrok... $i/30"
-            sleep 2
-
-          done
-
-          if [ -z "$URL" ]; then
-            echo "❌ Could not get Ngrok public URL."
-
-            echo ""
-            echo "========== NGROK LOG =========="
-            cat ngrok.log || true
-
-            exit 1
-          fi
-
-          echo ""
-          echo "======================================"
-          echo "🌐 MAGMA API URL"
-          echo "$URL"
-          echo "======================================"
-
-          echo "MAGMA_API_URL=$URL" >> "$GITHUB_ENV"
-
-
-      # ======================================
-      # VERIFY API
-      # ======================================
-      - name: Verify API
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "          VERIFYING API"
-          echo "======================================"
-
-          sleep 3
-
-          if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
-            echo "✅ Local API OK."
-          else
-            echo "❌ Local API failed."
-
-            echo ""
-            echo "========== API LOG =========="
-            cat api.log || true
-
-            exit 1
-          fi
-
-          if [ -n "${MAGMA_API_URL:-}" ]; then
-            echo "🌐 Public URL:"
-            echo "$MAGMA_API_URL"
-          fi
-
-
-      # ======================================
-      # KEEP API RUNNING
-      # ======================================
-      - name: Keep API Running
-        shell: bash
-        run: |
-          set -e
-
-          echo "======================================"
-          echo "       MAGMA API IS RUNNING"
-          echo "======================================"
-
-          START=$(date +%s)
-
-          while true; do
-
-            # -------------------------------
-            # CHECK FASTAPI
-            # -------------------------------
-            if [ -f api.pid ]; then
-
-              API_PID=$(cat api.pid)
-
-              if ! kill -0 "$API_PID" 2>/dev/null; then
-
-                echo "❌ FastAPI process stopped!"
-
-                echo ""
-                echo "========== API LOG =========="
-                tail -200 api.log || true
-
-                exit 1
-              fi
-
-            else
-
-              echo "❌ api.pid missing!"
-              exit 1
-
-            fi
-
-
-            # -------------------------------
-            # CHECK NGROK
-            # -------------------------------
-            if [ -f ngrok.pid ]; then
-
-              NGROK_PID=$(cat ngrok.pid)
-
-              if ! kill -0 "$NGROK_PID" 2>/dev/null; then
-
-                echo "❌ Ngrok process stopped!"
-
-                echo ""
-                echo "========== NGROK LOG =========="
-                tail -100 ngrok.log || true
-
-                exit 1
-              fi
-
-            else
-
-              echo "❌ ngrok.pid missing!"
-              exit 1
-
-            fi
-
-
-            # -------------------------------
-            # STATUS
-            # -------------------------------
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - START))
-
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] FastAPI=OK | Ngrok=OK | Running=${ELAPSED}s"
-
-            sleep 60
-
-          done
-
-
-      # ======================================
-      # CLEANUP
-      # ======================================
-      - name: Cleanup
-        if: always()
-        shell: bash
-        run: |
-          echo "======================================"
-          echo "          CLEANUP"
-          echo "======================================"
-
-          if [ -f api.pid ]; then
-            kill "$(cat api.pid)" 2>/dev/null || true
-          fi
-
-          if [ -f ngrok.pid ]; then
-            kill "$(cat ngrok.pid)" 2>/dev/null || true
-          fi
-
-          echo ""
-          echo "========== FINAL API LOG =========="
-
-          if [ -f api.log ]; then
-            tail -100 api.log || true
-          fi
-
-          echo ""
-          echo "========== FINAL NGROK LOG =========="
-
-          if [ -f ngrok.log ]; then
-            tail -100 ngrok.log || true
-          fi
-
-          echo ""
-          echo "✅ Cleanup completed."
+- name: Setup System Tools
+  shell: bash
+  run: |
+    set -e
+
+    echo "======================================"
+    echo "       SETTING UP SYSTEM TOOLS"
+    echo "======================================"
+
+    echo "Checking FFmpeg..."
+
+    if command -v ffmpeg >/dev/null 2>&1; then
+      echo "✅ FFmpeg already available."
+    else
+      echo "FFmpeg not found."
+      echo "Downloading static FFmpeg..."
+
+      curl -fL \
+        --retry 5 \
+        --connect-timeout 15 \
+        --max-time 180 \
+        "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
+        -o /tmp/ffmpeg.tar.xz
+
+      rm -rf /tmp/ffmpeg-static
+      mkdir -p /tmp/ffmpeg-static
+
+      tar -xJf /tmp/ffmpeg.tar.xz \
+        -C /tmp/ffmpeg-static \
+        --strip-components=1
+
+      sudo install -m 755 \
+        /tmp/ffmpeg-static/ffmpeg \
+        /usr/local/bin/ffmpeg
+
+      sudo install -m 755 \
+        /tmp/ffmpeg-static/ffprobe \
+        /usr/local/bin/ffprobe
+
+      rm -rf /tmp/ffmpeg-static
+      rm -f /tmp/ffmpeg.tar.xz
+    fi
+
+    echo ""
+    echo "FFmpeg:"
+    command -v ffmpeg
+    ffmpeg -version | head -1
+
+    echo ""
+    echo "FFprobe:"
+    command -v ffprobe
+    ffprobe -version | head -1
+
+    echo ""
+    echo "Node:"
+    node --version
+
+    echo ""
+    echo "npm:"
+    npm --version
+
+    echo ""
+    echo "curl:"
+    curl --version | head -1
+
+    echo ""
+    echo "git:"
+    git --version
+
+    echo ""
+    echo "======================================"
+    echo "✅ SYSTEM TOOLS READY"
+    echo "======================================"
