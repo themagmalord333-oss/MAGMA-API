@@ -27,27 +27,50 @@ jobs:
 
 
       # =========================
-      # SYSTEM DEPENDENCIES
+      # CHECK SYSTEM DEPENDENCIES
       # =========================
-      - name: Install System Dependencies
+      - name: Check System Dependencies
         run: |
           set -e
 
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl git unzip
-
           echo "======================================"
-          echo "SYSTEM VERSIONS"
+          echo "       CHECKING SYSTEM TOOLS"
           echo "======================================"
 
+          echo ""
           echo "FFmpeg:"
+          command -v ffmpeg
           ffmpeg -version | head -1
 
+          echo ""
+          echo "curl:"
+          command -v curl
+          curl --version | head -1
+
+          echo ""
+          echo "git:"
+          command -v git
+          git --version
+
+          echo ""
+          echo "unzip:"
+          command -v unzip
+          unzip -v | head -1
+
+          echo ""
           echo "Node:"
+          command -v node
           node --version
 
+          echo ""
           echo "npm:"
+          command -v npm
           npm --version
+
+          echo ""
+          echo "======================================"
+          echo "✅ ALL SYSTEM TOOLS AVAILABLE"
+          echo "======================================"
 
 
       # =========================
@@ -57,16 +80,29 @@ jobs:
         run: |
           set -e
 
-          curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
-            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "======================================"
+          echo "          INSTALLING NGROK"
+          echo "======================================"
 
-          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
-            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          curl -fL \
+            --retry 3 \
+            --connect-timeout 15 \
+            --max-time 120 \
+            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+            -o ngrok.tgz
 
-          sudo apt-get update
-          sudo apt-get install -y ngrok
+          tar -xzf ngrok.tgz
 
+          sudo mv ngrok /usr/local/bin/ngrok
+
+          rm -f ngrok.tgz
+
+          echo ""
+          echo "Ngrok version:"
           ngrok version
+
+          echo ""
+          echo "✅ Ngrok installed successfully."
 
 
       # =========================
@@ -76,6 +112,10 @@ jobs:
         run: |
           set -e
 
+          echo "======================================"
+          echo "    INSTALLING PYTHON DEPENDENCIES"
+          echo "======================================"
+
           python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
@@ -83,6 +123,13 @@ jobs:
           fi
 
           pip install fastapi uvicorn python-dotenv
+
+          echo ""
+          echo "yt-dlp version:"
+          yt-dlp --version
+
+          echo ""
+          echo "✅ Python dependencies installed."
 
 
       # =========================
@@ -113,11 +160,11 @@ jobs:
           echo "✅ cookies.txt downloaded."
 
           echo ""
-          echo "Cookie size:"
+          echo "Cookie file size:"
           wc -c cookies.txt
 
           echo ""
-          echo "Cookie lines:"
+          echo "Cookie line count:"
           wc -l cookies.txt
 
           echo ""
@@ -128,7 +175,7 @@ jobs:
           elif grep -Eq "youtube\.com|google\.com" cookies.txt; then
             echo "✅ YouTube/Google cookie entries detected."
           else
-            echo "❌ Cookie format not detected!"
+            echo "❌ Cookie format could not be detected!"
             exit 1
           fi
 
@@ -161,7 +208,7 @@ jobs:
           ls -lh cookies.txt
 
           echo ""
-          echo "Testing:"
+          echo "Testing YouTube video:"
           echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
 
           echo ""
@@ -196,7 +243,7 @@ jobs:
 
 
       # =========================
-      # CLEAN ENVIRONMENT
+      # GENERATE ENVIRONMENT
       # =========================
       - name: Generate Environment
         env:
@@ -207,15 +254,28 @@ jobs:
         run: |
           set -e
 
-          echo "Creating clean environment..."
+          echo "======================================"
+          echo "       CREATING ENVIRONMENT"
+          echo "======================================"
 
           rm -f .env
           touch .env
 
+          # =========================
+          # APPLICATION
+          # =========================
           echo "DOWNLOAD_WORKERS=3" >> .env
           echo "APP_HOST=0.0.0.0" >> .env
           echo "APP_PORT=8000" >> .env
 
+          # =========================
+          # COOKIE URL
+          # =========================
+          echo "COOKIE_URL=https://raw.githubusercontent.com/themagmalord333-oss/COOKIE/main/cookies.txt" >> .env
+
+          # =========================
+          # NGROK
+          # =========================
           if [ -z "$NGROK_TOKEN" ]; then
             echo "❌ NGROK_TOKEN secret is missing!"
             exit 1
@@ -223,10 +283,16 @@ jobs:
 
           echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
 
+          # =========================
+          # MONGODB
+          # =========================
           if [ -n "$MONGO_DB_URI" ]; then
             echo "MONGO_DB_URI=$MONGO_DB_URI" >> .env
           fi
 
+          # =========================
+          # TELEGRAM API
+          # =========================
           if [ -n "$API_ID" ]; then
             echo "API_ID=$API_ID" >> .env
           fi
@@ -235,12 +301,10 @@ jobs:
             echo "API_HASH=$API_HASH" >> .env
           fi
 
-          # Public cookie source
-          echo "COOKIE_URL=https://raw.githubusercontent.com/themagmalord333-oss/COOKIE/main/cookies.txt" >> .env
-
           echo ""
           echo "✅ Environment prepared."
           echo "DOWNLOAD_WORKERS=3"
+          echo "COOKIE_URL configured."
 
 
       # =========================
@@ -251,6 +315,10 @@ jobs:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
         run: |
           set -e
+
+          echo "======================================"
+          echo "        CONFIGURING NGROK"
+          echo "======================================"
 
           ngrok config add-authtoken "$NGROK_TOKEN"
 
@@ -263,6 +331,10 @@ jobs:
       - name: Check app.py
         run: |
           set -e
+
+          echo "======================================"
+          echo "           CHECKING APP"
+          echo "======================================"
 
           if [ ! -f app.py ]; then
             echo "❌ app.py not found!"
@@ -334,6 +406,10 @@ jobs:
         run: |
           set -e
 
+          echo "======================================"
+          echo "          STARTING NGROK"
+          echo "======================================"
+
           nohup ngrok http 8000 \
             --log=stdout > ngrok.log 2>&1 &
 
@@ -359,16 +435,27 @@ jobs:
         run: |
           set -e
 
+          echo "======================================"
+          echo "       GETTING PUBLIC URL"
+          echo "======================================"
+
           for i in {1..20}; do
 
             URL=$(curl -s http://127.0.0.1:4040/api/tunnels \
               | python -c '
-          import sys,json
+          import sys
+          import json
+
           try:
-              data=json.load(sys.stdin)
-              tunnels=data.get("tunnels",[])
-              print(tunnels[0]["public_url"] if tunnels else "")
-          except:
+              data = json.load(sys.stdin)
+              tunnels = data.get("tunnels", [])
+
+              if tunnels:
+                  print(tunnels[0]["public_url"])
+              else:
+                  print("")
+
+          except Exception:
               print("")
           ')
 
@@ -378,6 +465,9 @@ jobs:
               echo "🌐 MAGMA API URL"
               echo "$URL"
               echo "======================================"
+
+              echo "MAGMA_API_URL=$URL" >> "$GITHUB_ENV"
+
               break
             fi
 
@@ -394,15 +484,25 @@ jobs:
         run: |
           set -e
 
+          echo "======================================"
+          echo "          VERIFYING API"
+          echo "======================================"
+
           sleep 3
 
           if curl -fsS http://127.0.0.1:8000/ >/dev/null 2>&1; then
             echo "✅ API is responding."
           else
             echo "⚠️ Root endpoint did not respond."
+
             echo ""
             echo "========== API LOG =========="
-            cat api.log
+
+            if [ -f api.log ]; then
+              cat api.log
+            fi
+
+            exit 1
           fi
 
 
@@ -415,32 +515,65 @@ jobs:
           echo "       MAGMA API IS RUNNING"
           echo "======================================"
 
+          if [ -n "${MAGMA_API_URL:-}" ]; then
+            echo "🌐 URL: $MAGMA_API_URL"
+          fi
+
           START=$(date +%s)
 
           while true; do
 
+            # =========================
+            # CHECK FASTAPI
+            # =========================
             if [ -f api.pid ]; then
+
               API_PID=$(cat api.pid)
 
               if ! kill -0 "$API_PID" 2>/dev/null; then
+
                 echo "❌ FastAPI process stopped!"
+
                 echo ""
                 echo "========== API LOG =========="
-                cat api.log
+
+                if [ -f api.log ]; then
+                  tail -200 api.log
+                fi
+
                 exit 1
               fi
+
             fi
 
+
+            # =========================
+            # CHECK NGROK
+            # =========================
             if [ -f ngrok.pid ]; then
+
               NGROK_PID=$(cat ngrok.pid)
 
               if ! kill -0 "$NGROK_PID" 2>/dev/null; then
+
                 echo "❌ Ngrok process stopped!"
-                cat ngrok.log
+
+                echo ""
+                echo "========== NGROK LOG =========="
+
+                if [ -f ngrok.log ]; then
+                  tail -100 ngrok.log
+                fi
+
                 exit 1
               fi
+
             fi
 
+
+            # =========================
+            # STATUS
+            # =========================
             NOW=$(date +%s)
             ELAPSED=$((NOW - START))
 
@@ -457,6 +590,11 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+
+          echo "======================================"
+          echo "          CLEANUP"
+          echo "======================================"
+
           echo "Stopping services..."
 
           if [ -f api.pid ]; then
@@ -467,12 +605,14 @@ jobs:
             kill "$(cat ngrok.pid)" 2>/dev/null || true
           fi
 
+
           echo ""
           echo "========== FINAL API LOG =========="
 
           if [ -f api.log ]; then
             tail -100 api.log || true
           fi
+
 
           echo ""
           echo "========== FINAL NGROK LOG =========="
@@ -481,4 +621,6 @@ jobs:
             tail -50 ngrok.log || true
           fi
 
+
+          echo ""
           echo "✅ Cleanup completed."
