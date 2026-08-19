@@ -32,7 +32,20 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl git unzip
+          sudo apt-get install -y ffmpeg curl git unzip nodejs npm
+
+          echo "======================================"
+          echo "SYSTEM VERSIONS"
+          echo "======================================"
+
+          echo "FFmpeg:"
+          ffmpeg -version | head -1
+
+          echo "Node:"
+          node --version
+
+          echo "npm:"
+          npm --version
 
 
       # =========================
@@ -64,6 +77,62 @@ jobs:
           fi
 
           pip install fastapi uvicorn python-dotenv
+
+
+      # =========================
+      # TEST YT-DLP / YOUTUBE
+      # =========================
+      - name: Test yt-dlp YouTube
+        run: |
+          set +e
+
+          echo "======================================"
+          echo "       YT-DLP DIAGNOSTIC TEST"
+          echo "======================================"
+
+          echo ""
+          echo "yt-dlp version:"
+          yt-dlp --version
+
+          echo ""
+          echo "Node version:"
+          node --version
+
+          echo ""
+          echo "yt-dlp location:"
+          which yt-dlp
+
+          echo ""
+          echo "Testing YouTube video:"
+          echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
+
+          echo ""
+          echo "======================================"
+          echo "       YOUTUBE FORMAT TEST"
+          echo "======================================"
+
+          yt-dlp \
+            --js-runtimes node \
+            --no-playlist \
+            -F \
+            "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
+
+          RESULT=$?
+
+          echo ""
+          echo "======================================"
+
+          if [ $RESULT -eq 0 ]; then
+            echo "✅ YouTube extraction WORKS"
+          else
+            echo "❌ YouTube extraction FAILED"
+            echo "Exit code: $RESULT"
+          fi
+
+          echo "======================================"
+
+          # Diagnostic step ko workflow fail nahi karne denge.
+          exit 0
 
 
       # =========================
