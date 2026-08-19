@@ -1,73 +1,292 @@
-- name: Setup System Tools
-  shell: bash
-  run: |
-    set -e
+name: MAGMA Diagnostic Check
 
-    echo "======================================"
-    echo "       SETTING UP SYSTEM TOOLS"
-    echo "======================================"
+on:
+  workflow_dispatch:
 
-    echo "Checking FFmpeg..."
+permissions:
+  contents: read
 
-    if command -v ffmpeg >/dev/null 2>&1; then
-      echo "✅ FFmpeg already available."
-    else
-      echo "FFmpeg not found."
-      echo "Downloading static FFmpeg..."
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
-      curl -fL \
-        --retry 5 \
-        --connect-timeout 15 \
-        --max-time 180 \
-        "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
-        -o /tmp/ffmpeg.tar.xz
+    steps:
 
-      rm -rf /tmp/ffmpeg-static
-      mkdir -p /tmp/ffmpeg-static
+      # =========================
+      # CHECKOUT
+      # =========================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      tar -xJf /tmp/ffmpeg.tar.xz \
-        -C /tmp/ffmpeg-static \
-        --strip-components=1
 
-      sudo install -m 755 \
-        /tmp/ffmpeg-static/ffmpeg \
-        /usr/local/bin/ffmpeg
+      # =========================
+      # PYTHON
+      # =========================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      sudo install -m 755 \
-        /tmp/ffmpeg-static/ffprobe \
-        /usr/local/bin/ffprobe
 
-      rm -rf /tmp/ffmpeg-static
-      rm -f /tmp/ffmpeg.tar.xz
-    fi
+      # =========================
+      # NODE
+      # =========================
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
-    echo ""
-    echo "FFmpeg:"
-    command -v ffmpeg
-    ffmpeg -version | head -1
 
-    echo ""
-    echo "FFprobe:"
-    command -v ffprobe
-    ffprobe -version | head -1
+      # =========================
+      # CHECK SYSTEM TOOLS
+      # =========================
+      - name: Check System Tools
+        shell: bash
+        run: |
+          set +e
 
-    echo ""
-    echo "Node:"
-    node --version
+          echo "======================================"
+          echo "       MAGMA SYSTEM DIAGNOSTIC"
+          echo "======================================"
 
-    echo ""
-    echo "npm:"
-    npm --version
+          echo ""
+          echo "===== OS ====="
+          cat /etc/os-release | head -5
 
-    echo ""
-    echo "curl:"
-    curl --version | head -1
+          echo ""
+          echo "===== CPU / RAM / DISK ====="
+          nproc
+          free -h
+          df -h /
 
-    echo ""
-    echo "git:"
-    git --version
+          echo ""
+          echo "===== FFmpeg ====="
 
-    echo ""
-    echo "======================================"
-    echo "✅ SYSTEM TOOLS READY"
-    echo "======================================"
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "✅ FFmpeg FOUND"
+            command -v ffmpeg
+            ffmpeg -version | head -1
+          else
+            echo "❌ FFmpeg NOT FOUND"
+          fi
+
+          echo ""
+          echo "===== FFprobe ====="
+
+          if command -v ffprobe >/dev/null 2>&1; then
+            echo "✅ FFprobe FOUND"
+            command -v ffprobe
+            ffprobe -version | head -1
+          else
+            echo "❌ FFprobe NOT FOUND"
+          fi
+
+          echo ""
+          echo "===== Node ====="
+
+          if command -v node >/dev/null 2>&1; then
+            echo "✅ Node FOUND"
+            command -v node
+            node --version
+          else
+            echo "❌ Node NOT FOUND"
+          fi
+
+          echo ""
+          echo "===== npm ====="
+
+          if command -v npm >/dev/null 2>&1; then
+            echo "✅ npm FOUND"
+            npm --version
+          else
+            echo "❌ npm NOT FOUND"
+          fi
+
+          echo ""
+          echo "===== curl ====="
+
+          if command -v curl >/dev/null 2>&1; then
+            echo "✅ curl FOUND"
+            curl --version | head -1
+          else
+            echo "❌ curl NOT FOUND"
+          fi
+
+          echo ""
+          echo "===== git ====="
+
+          git --version
+
+          echo ""
+          echo "======================================"
+          echo "       SYSTEM CHECK COMPLETE"
+          echo "======================================"
+
+
+      # =========================
+      # INSTALL YT-DLP ONLY
+      # =========================
+      - name: Install yt-dlp
+        shell: bash
+        run: |
+          set -e
+
+          python -m pip install --upgrade pip
+
+          pip install --upgrade yt-dlp yt-dlp-ejs
+
+          echo ""
+          echo "======================================"
+          echo "          YT-DLP INFORMATION"
+          echo "======================================"
+
+          echo "Version:"
+          yt-dlp --version
+
+          echo ""
+          echo "Location:"
+          command -v yt-dlp
+
+
+      # =========================
+      # CHECK COOKIES
+      # =========================
+      - name: Check cookies.txt
+        shell: bash
+        run: |
+          set +e
+
+          echo "======================================"
+          echo "          COOKIE DIAGNOSTIC"
+          echo "======================================"
+
+          if [ ! -f cookies.txt ]; then
+            echo "❌ cookies.txt NOT FOUND"
+            echo ""
+            echo "Files in repository:"
+            find . -maxdepth 2 -type f | sort
+            exit 1
+          fi
+
+          echo "✅ cookies.txt FOUND"
+
+          echo ""
+          echo "Path:"
+          realpath cookies.txt
+
+          echo ""
+          echo "Size:"
+          wc -c cookies.txt
+
+          echo ""
+          echo "Lines:"
+          wc -l cookies.txt
+
+          echo ""
+          echo "First line:"
+
+          head -1 cookies.txt
+
+          echo ""
+          echo "Netscape format check:"
+
+          if grep -q "Netscape HTTP Cookie File" cookies.txt; then
+            echo "✅ Netscape format detected"
+          else
+            echo "⚠️ Netscape header not detected"
+          fi
+
+
+      # =========================
+      # YOUTUBE TEST
+      # =========================
+      - name: Test YouTube Extraction
+        shell: bash
+        run: |
+          set +e
+
+          echo "======================================"
+          echo "       YOUTUBE EXTRACTION TEST"
+          echo "======================================"
+
+          URL="https://www.youtube.com/watch?v=qy9NX7iI6YQ"
+
+          echo ""
+          echo "URL:"
+          echo "$URL"
+
+          echo ""
+          echo "yt-dlp:"
+          yt-dlp --version
+
+          echo ""
+          echo "Node:"
+          node --version
+
+          echo ""
+          echo "Testing WITHOUT cookies first..."
+          echo "======================================"
+
+          yt-dlp \
+            --js-runtimes node \
+            --remote-components ejs:github \
+            --no-playlist \
+            --skip-download \
+            --print "%(id)s | %(title)s" \
+            "$URL"
+
+          NO_COOKIE_EXIT=$?
+
+          echo ""
+          echo "Without-cookie exit code: $NO_COOKIE_EXIT"
+
+          echo ""
+          echo "======================================"
+          echo "Testing WITH cookies..."
+          echo "======================================"
+
+          if [ ! -f cookies.txt ]; then
+            echo "❌ cookies.txt missing"
+            exit 1
+          fi
+
+          yt-dlp \
+            --cookies cookies.txt \
+            --js-runtimes node \
+            --remote-components ejs:github \
+            --no-playlist \
+            --skip-download \
+            --print "%(id)s | %(title)s" \
+            "$URL"
+
+          COOKIE_EXIT=$?
+
+          echo ""
+          echo "With-cookie exit code: $COOKIE_EXIT"
+
+          echo ""
+          echo "======================================"
+          echo "          DIAGNOSTIC RESULT"
+          echo "======================================"
+
+          if [ "$COOKIE_EXIT" -eq 0 ]; then
+            echo "✅ YouTube works WITH cookies."
+            echo "👉 Cookie authentication is working."
+            exit 0
+          fi
+
+          if [ "$NO_COOKIE_EXIT" -eq 0 ]; then
+            echo "✅ YouTube works WITHOUT cookies."
+            echo "👉 Cookies are probably not required."
+          else
+            echo "❌ YouTube fails WITHOUT cookies."
+            echo "👉 Runner/IP/YouTube extraction restriction may be involved."
+          fi
+
+          echo ""
+          echo "❌ YouTube test WITH cookies FAILED."
+
+          echo ""
+          echo "Possible causes:"
+          echo "1. cookies.txt
