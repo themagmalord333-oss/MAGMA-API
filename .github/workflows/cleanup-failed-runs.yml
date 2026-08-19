@@ -1,140 +1,81 @@
-name: Cleanup Failed Actions
+name: Delete All Action Runs
 
 on:
   workflow_dispatch:
 
-  schedule:
-    # Every hour at minute 17
-    - cron: "17 * * * *"
-
 permissions:
   actions: write
-  contents: read
 
 jobs:
-
-  cleanup:
-
+  delete-runs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ======================================
-      # CLEAN FAILED RUNS
-      # ======================================
-      - name: Cleanup Old Action Runs
+      - name: Delete All Completed Runs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-
         shell: bash
-
         run: |
           set -e
 
           echo "======================================"
-          echo "       MAGMA ACTION CLEANUP"
+          echo "     MAGMA ACTION RUN CLEANUP"
           echo "======================================"
 
-          echo ""
-          echo "Repository:"
-          echo "$REPO"
+          total=0
 
-          echo ""
-          echo "Finding failed/cancelled runs..."
+          while true; do
 
-          gh api \
-            --paginate \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/$REPO/actions/runs?per_page=100" \
-            --jq '
-              .workflow_runs[]
-              | select(
-                  (.status == "completed")
-                  and
-                  (
-                    .conclusion == "failure"
-                    or
-                    .conclusion == "cancelled"
-                    or
-                    .conclusion == "timed_out"
-                  )
-                  and
-                  .name != "Cleanup Failed Actions"
-                )
-              | [
-                  .id,
-                  .name,
-                  .conclusion,
-                  .created_at
-                ]
-              | @tsv
-            ' > /tmp/runs.txt
+            gh api \
+              --paginate \
+              --slurp \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPO/actions/runs?per_page=100" \
+              --jq '
+                .[][]
+                | .workflow_runs[]
+                | select(.status == "completed")
+                | .id
+              ' > /tmp/run_ids.txt
 
-
-          echo ""
-          echo "======================================"
-          echo "          RUNS FOUND"
-          echo "======================================"
-
-
-          if [ ! -s /tmp/runs.txt ]; then
-
-            echo "✅ No failed/cancelled runs found."
-
-            exit 0
-
-          fi
-
-
-          cat /tmp/runs.txt
-
-
-          echo ""
-          echo "======================================"
-          echo "       DELETING OLD RUNS"
-          echo "======================================"
-
-
-          while IFS=$'\t' read -r RUN_ID NAME CONCLUSION CREATED; do
-
-            if [ -z "$RUN_ID" ]; then
-              continue
+            if [ ! -s /tmp/run_ids.txt ]; then
+              echo ""
+              echo "======================================"
+              echo "✅ NO COMPLETED RUNS LEFT"
+              echo "======================================"
+              break
             fi
+
+            while read -r RUN_ID; do
+
+              [ -z "$RUN_ID" ] && continue
+
+              echo "🗑️ Deleting run: $RUN_ID"
+
+              if gh api \
+                --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/repos/$REPO/actions/runs/$RUN_ID" >/dev/null 2>&1; then
+
+                echo "✅ Deleted: $RUN_ID"
+                total=$((total + 1))
+
+              else
+
+                echo "⚠️ Could not delete: $RUN_ID"
+
+              fi
+
+            done < /tmp/run_ids.txt
 
             echo ""
-            echo "--------------------------------------"
+            echo "Deleted so far: $total"
 
-            echo "Run ID:"
-            echo "$RUN_ID"
-
-            echo "Workflow:"
-            echo "$NAME"
-
-            echo "Conclusion:"
-            echo "$CONCLUSION"
-
-            echo "Created:"
-            echo "$CREATED"
-
-
-            if gh api \
-              --method DELETE \
-              -H "Accept: application/vnd.github+json" \
-              "/repos/$REPO/actions/runs/$RUN_ID"; then
-
-              echo "✅ Deleted run $RUN_ID"
-
-            else
-
-              echo "⚠️ Could not delete run $RUN_ID"
-
-            fi
-
-          done < /tmp/runs.txt
-
+          done
 
           echo ""
           echo "======================================"
-          echo "       CLEANUP COMPLETED"
+          echo "       CLEANUP FINISHED"
           echo "======================================"
+          echo "Total deleted: $total"
