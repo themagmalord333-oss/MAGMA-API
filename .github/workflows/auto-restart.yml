@@ -12,10 +12,11 @@ permissions:
   contents: read
 
 jobs:
+
   restart:
-    # VERY IMPORTANT:
-    # Only react to MAGMA Music API.
-    # Never react to this Auto Restart workflow itself.
+
+    # Only restart when the main API job
+    # reaches GitHub's timeout.
     if: >
       github.event.workflow_run.name == 'MAGMA Music API' &&
       github.event.workflow_run.conclusion == 'timed_out'
@@ -24,6 +25,9 @@ jobs:
 
     steps:
 
+      # ======================================
+      # SHOW PREVIOUS RUN
+      # ======================================
       - name: Show Previous Run
         run: |
           echo "======================================"
@@ -40,12 +44,18 @@ jobs:
           echo "${{ github.event.workflow_run.id }}"
 
 
+      # ======================================
+      # WAIT
+      # ======================================
       - name: Wait Before Restart
         run: |
           echo "Waiting 20 seconds..."
           sleep 20
 
 
+      # ======================================
+      # START MAIN WORKFLOW
+      # ======================================
       - name: Start MAGMA Music API Again
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,4 +71,6 @@ jobs:
             --ref main
 
           echo ""
-          echo "✅ New MAGMA Music API run started."
+          echo "======================================"
+          echo "✅ NEW MAGMA API RUN STARTED"
+          echo "======================================"
