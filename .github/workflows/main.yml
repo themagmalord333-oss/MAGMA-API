@@ -34,7 +34,7 @@ jobs:
           set -e
 
           sudo apt-get update
-          sudo apt-get install -y ffmpeg curl git unzip nodejs npm
+          sudo apt-get install -y ffmpeg curl git unzip
 
           echo "======================================"
           echo "SYSTEM VERSIONS"
@@ -86,7 +86,7 @@ jobs:
 
 
       # =========================
-      # DOWNLOAD COOKIES
+      # DOWNLOAD YOUTUBE COOKIES
       # =========================
       - name: Download YouTube Cookies
         env:
@@ -126,20 +126,15 @@ jobs:
           wc -l cookies.txt
 
           echo ""
-          echo "Cookie format check:"
+          echo "Checking cookie format..."
 
           if grep -q "^# Netscape HTTP Cookie File" cookies.txt; then
             echo "✅ Netscape cookie format detected."
+          elif grep -Eq "youtube\.com|google\.com" cookies.txt; then
+            echo "✅ YouTube/Google cookie entries detected."
           else
-            echo "⚠️ Netscape header not found."
-            echo "Checking for cookie entries..."
-
-            if grep -Eq "youtube\.com|google\.com" cookies.txt; then
-              echo "✅ YouTube/Google cookie entries detected."
-            else
-              echo "❌ No obvious YouTube/Google cookie entries found."
-              exit 1
-            fi
+            echo "❌ Cookie format could not be detected."
+            exit 1
           fi
 
 
@@ -171,7 +166,7 @@ jobs:
           ls -lh cookies.txt
 
           echo ""
-          echo "Testing YouTube with cookies:"
+          echo "Testing YouTube video:"
           echo "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
 
           echo ""
@@ -183,7 +178,6 @@ jobs:
             --cookies cookies.txt \
             --js-runtimes node \
             --no-playlist \
-            --verbose \
             -F \
             "https://www.youtube.com/watch?v=qy9NX7iI6YQ"
 
@@ -228,6 +222,9 @@ jobs:
           echo "APP_HOST=0.0.0.0" >> .env
           echo "APP_PORT=8000" >> .env
 
+          # =========================
+          # NGROK
+          # =========================
           if [ -z "$NGROK_TOKEN" ]; then
             echo "❌ NGROK_TOKEN secret is missing!"
             exit 1
@@ -235,10 +232,16 @@ jobs:
 
           echo "NGROK_TOKEN=$NGROK_TOKEN" >> .env
 
+          # =========================
+          # MONGODB
+          # =========================
           if [ -n "$MONGO_DB_URI" ]; then
             echo "MONGO_DB_URI=$MONGO_DB_URI" >> .env
           fi
 
+          # =========================
+          # TELEGRAM API
+          # =========================
           if [ -n "$API_ID" ]; then
             echo "API_ID=$API_ID" >> .env
           fi
@@ -247,8 +250,9 @@ jobs:
             echo "API_HASH=$API_HASH" >> .env
           fi
 
-          # COOKIE_URL is intentionally kept in .env
-          # so app.py can use it on startup.
+          # =========================
+          # COOKIE URL
+          # =========================
           if [ -n "$COOKIE_URL" ]; then
             echo "COOKIE_URL=$COOKIE_URL" >> .env
           fi
