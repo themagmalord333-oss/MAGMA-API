@@ -21,23 +21,101 @@ from ytmusicapi import YTMusic
 
 load_dotenv()
 
-DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
-CACHE_EXPIRE_HOURS = float(os.getenv("CACHE_EXPIRE_HOURS", "24"))
-MAX_VIDEO_QUALITY = os.getenv("MAX_VIDEO_QUALITY", "720")
-PORT = int(os.getenv("PORT", "8000"))
+DOWNLOAD_DIR = os.getenv(
+    "DOWNLOAD_DIR",
+    "downloads"
+)
 
-COOKIE_URL = os.getenv("COOKIE_URL", "")
+CACHE_EXPIRE_HOURS = float(
+    os.getenv(
+        "CACHE_EXPIRE_HOURS",
+        "24"
+    )
+)
+
+MAX_VIDEO_QUALITY = os.getenv(
+    "MAX_VIDEO_QUALITY",
+    "720"
+)
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "8000"
+    )
+)
+
+COOKIE_URL = os.getenv(
+    "COOKIE_URL",
+    ""
+)
+
 COOKIES_FILE = "cookies.txt"
 DB_FILE = "cache.db"
 
-# Speed tuning
-CONCURRENT_FRAGMENTS = int(
-    os.getenv("CONCURRENT_FRAGMENTS", "25")
+
+# =========================================================
+# SPEED / CONCURRENCY CONTROLS
+# =========================================================
+
+# Maximum number of complete downloads running at once.
+#
+# Example:
+# DOWNLOAD_WORKERS=3
+#
+# Means:
+#   3 audio/video download jobs can run simultaneously.
+#   4th download waits until one finishes.
+DOWNLOAD_WORKERS = max(
+    1,
+    int(
+        os.getenv(
+            "DOWNLOAD_WORKERS",
+            "3"
+        )
+    )
 )
 
-HTTP_CHUNK_SIZE = int(
-    os.getenv("HTTP_CHUNK_SIZE", "10485760")
-)  # 10 MB
+
+# Number of DASH/HLS fragments downloaded concurrently
+# inside ONE download job.
+CONCURRENT_FRAGMENTS = max(
+    1,
+    int(
+        os.getenv(
+            "CONCURRENT_FRAGMENTS",
+            "25"
+        )
+    )
+)
+
+
+# HTTP chunk size.
+# 10485760 = 10 MB
+HTTP_CHUNK_SIZE = max(
+    0,
+    int(
+        os.getenv(
+            "HTTP_CHUNK_SIZE",
+            "10485760"
+        )
+    )
+)
+
+
+# Shared download semaphore.
+#
+# IMPORTANT:
+# This controls BOTH:
+#   /download
+#   /video
+#
+# So DOWNLOAD_WORKERS=3 means:
+# 3 total active download jobs,
+# not 3 audio + 3 video.
+download_semaphore = asyncio.Semaphore(
+    DOWNLOAD_WORKERS
+)
 
 
 # =========================================================
@@ -47,7 +125,9 @@ HTTP_CHUNK_SIZE = int(
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[
+        logging.StreamHandler()
+    ]
 )
 
 logger = logging.getLogger(__name__)
@@ -57,20 +137,30 @@ logger = logging.getLogger(__name__)
 # DIRECTORIES
 # =========================================================
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(
+    DOWNLOAD_DIR,
+    exist_ok=True
+)
 
 
 # =========================================================
-# DATABASE & CACHE
+# DATABASE
 # =========================================================
 
 def init_db():
-    """Initialize SQLite cache database."""
+    """
+    Initialize SQLite cache database.
+    """
 
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
 
-            conn.execute("""
+        with sqlite3.connect(
+            DB_FILE,
+            timeout=15.0
+        ) as conn:
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS downloads (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     video_id TEXT,
@@ -84,14 +174,20 @@ def init_db():
                     thumbnail TEXT,
                     UNIQUE(video_id, file_type)
                 )
-            """)
+                """
+            )
 
             conn.commit()
 
-        logger.info("SQLite database initialized.")
+        logger.info(
+            "SQLite database initialized."
+        )
 
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
+
+        logger.error(
+            f"Database initialization failed: {e}"
+        )
 
 
 def get_cached_metadata(
@@ -101,7 +197,10 @@ def get_cached_metadata(
 
     try:
 
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+        with sqlite3.connect(
+            DB_FILE,
+            timeout=15.0
+        ) as conn:
 
             conn.row_factory = sqlite3.Row
 
@@ -114,27 +213,38 @@ def get_cached_metadata(
                 WHERE video_id = ?
                 AND file_type = ?
                 """,
-                (video_id, file_type)
+                (
+                    video_id,
+                    file_type
+                )
             )
 
             row = cur.fetchone()
 
             if row:
 
+                file_path = row["file_path"]
+
                 if (
-                    os.path.isfile(row["file_path"])
-                    and os.path.getsize(row["file_path"]) > 0
+                    os.path.isfile(file_path)
+                    and os.path.getsize(file_path) > 0
                 ):
 
                     return dict(row)
 
                 logger.warning(
-                    f"Cached file missing: {row['file_name']}"
+                    f"Cached file missing: "
+                    f"{row['file_name']}"
                 )
 
                 cur.execute(
-                    "DELETE FROM downloads WHERE id = ?",
-                    (row["id"],)
+                    """
+                    DELETE FROM downloads
+                    WHERE id = ?
+                    """,
+                    (
+                        row["id"],
+                    )
                 )
 
                 conn.commit()
@@ -157,9 +267,13 @@ def save_cached_metadata(
 
     try:
 
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+        with sqlite3.connect(
+            DB_FILE,
+            timeout=15.0
+        ) as conn:
 
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO downloads
                 (
                     video_id,
@@ -173,17 +287,19 @@ def save_cached_metadata(
                     thumbnail
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                data["videoId"],
-                data["title"],
-                data["filename"],
-                data["path"],
-                file_type,
-                data["filesize"],
-                data["duration"],
-                time.time(),
-                data["thumbnail"]
-            ))
+                """,
+                (
+                    data["videoId"],
+                    data["title"],
+                    data["filename"],
+                    data["path"],
+                    file_type,
+                    data["filesize"],
+                    data["duration"],
+                    time.time(),
+                    data["thumbnail"]
+                )
+            )
 
             conn.commit()
 
@@ -206,11 +322,16 @@ def find_legacy_cached_file(
 
     try:
 
-        with os.scandir(DOWNLOAD_DIR) as entries:
+        with os.scandir(
+            DOWNLOAD_DIR
+        ) as entries:
 
             for entry in entries:
 
-                if entry.is_file() and entry.name.endswith(suffix):
+                if (
+                    entry.is_file()
+                    and entry.name.endswith(suffix)
+                ):
                     return entry.name
 
     except Exception as e:
@@ -238,7 +359,7 @@ async def cache_cleanup_task():
 
             expiry_time = (
                 time.time()
-                - (CACHE_EXPIRE_HOURS * 3600)
+                - CACHE_EXPIRE_HOURS * 3600
             )
 
             def perform_cleanup():
@@ -252,14 +373,15 @@ async def cache_cleanup_task():
                 ) as conn:
 
                     conn.row_factory = sqlite3.Row
-
                     cur = conn.cursor()
 
-                    # -------------------------------------------------
+                    # ---------------------------------------------
                     # Remove expired files
-                    # -------------------------------------------------
+                    # ---------------------------------------------
 
-                    if os.path.exists(DOWNLOAD_DIR):
+                    if os.path.exists(
+                        DOWNLOAD_DIR
+                    ):
 
                         for entry in os.scandir(
                             DOWNLOAD_DIR
@@ -277,7 +399,9 @@ async def cache_cleanup_task():
                                     < expiry_time
                                 ):
 
-                                    os.remove(entry.path)
+                                    os.remove(
+                                        entry.path
+                                    )
 
                                     deleted_files += 1
 
@@ -286,7 +410,9 @@ async def cache_cleanup_task():
                                         DELETE FROM downloads
                                         WHERE file_name = ?
                                         """,
-                                        (entry.name,)
+                                        (
+                                            entry.name,
+                                        )
                                     )
 
                             except Exception as e:
@@ -296,12 +422,15 @@ async def cache_cleanup_task():
                                     f"{entry.name}: {e}"
                                 )
 
-                    # -------------------------------------------------
+                    # ---------------------------------------------
                     # Remove phantom DB records
-                    # -------------------------------------------------
+                    # ---------------------------------------------
 
                     cur.execute(
-                        "SELECT id, file_path FROM downloads"
+                        """
+                        SELECT id, file_path
+                        FROM downloads
+                        """
                     )
 
                     records = cur.fetchall()
@@ -317,14 +446,19 @@ async def cache_cleanup_task():
                                 DELETE FROM downloads
                                 WHERE id = ?
                                 """,
-                                (record["id"],)
+                                (
+                                    record["id"],
+                                )
                             )
 
                             db_cleaned += 1
 
                     conn.commit()
 
-                return deleted_files, db_cleaned
+                return (
+                    deleted_files,
+                    db_cleaned
+                )
 
             deleted_files, db_cleaned = (
                 await asyncio.to_thread(
@@ -335,8 +469,8 @@ async def cache_cleanup_task():
             if deleted_files or db_cleaned:
 
                 logger.info(
-                    f"Cleanup complete: "
-                    f"deleted={deleted_files}, "
+                    "Cleanup complete: "
+                    f"deleted_files={deleted_files}, "
                     f"db_cleaned={db_cleaned}"
                 )
 
@@ -361,10 +495,27 @@ async def cache_cleanup_task():
 # =========================================================
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(
+    app: FastAPI
+):
 
     logger.info(
         "Starting MAGMA Music API..."
+    )
+
+    logger.info(
+        "Download workers: %s",
+        DOWNLOAD_WORKERS
+    )
+
+    logger.info(
+        "Concurrent fragments: %s",
+        CONCURRENT_FRAGMENTS
+    )
+
+    logger.info(
+        "HTTP chunk size: %s bytes",
+        HTTP_CHUNK_SIZE
     )
 
     init_db()
@@ -393,7 +544,7 @@ async def lifespan(app: FastAPI):
             )
 
     # -----------------------------------------------------
-    # Background cleanup
+    # Start cleanup worker
     # -----------------------------------------------------
 
     cleanup_worker = asyncio.create_task(
@@ -413,8 +564,11 @@ async def lifespan(app: FastAPI):
     cleanup_worker.cancel()
 
     try:
+
         await cleanup_worker
+
     except asyncio.CancelledError:
+
         pass
 
 
@@ -432,7 +586,7 @@ ytmusic = YTMusic()
 
 
 # =========================================================
-# YOUTUBE VIDEO ID
+# VIDEO ID EXTRACTION
 # =========================================================
 
 def extract_video_id(
@@ -449,8 +603,11 @@ def extract_video_id(
         return url
 
     pattern = (
-        r"(?:youtu\.be/|v=|/shorts/|"
-        r"/embed/|/v/)"
+        r"(?:youtu\.be/"
+        r"|v="
+        r"|/shorts/"
+        r"|/embed/"
+        r"|/v/)"
         r"([0-9A-Za-z_-]{11})"
     )
 
@@ -460,6 +617,7 @@ def extract_video_id(
     )
 
     if match:
+
         return match.group(1)
 
     match = re.search(
@@ -482,49 +640,69 @@ def get_base_ydl_opts() -> Dict[str, Any]:
 
     opts = {
 
-        # Filename
         "outtmpl":
             f"{DOWNLOAD_DIR}/"
             "%(title).150s_%(id)s.%(ext)s",
 
-        "restrictfilenames": True,
-        "noplaylist": True,
+        "restrictfilenames":
+            True,
 
-        # Logging
-        "quiet": False,
-        "no_warnings": False,
+        "noplaylist":
+            True,
 
-        # Network
-        "retries": 10,
-        "fragment_retries": 10,
-        "socket_timeout": 30,
+        "quiet":
+            False,
 
-        # Resume
-        "continuedl": True,
+        "no_warnings":
+            False,
 
-        # YouTube JS challenge support
-        "js_runtimes": {
-            "node": {}
-        },
+        "retries":
+            10,
 
-        "remote_components": [
-            "ejs:github"
-        ],
+        "fragment_retries":
+            10,
+
+        "socket_timeout":
+            30,
+
+        # Resume interrupted downloads
+        "continuedl":
+            True,
+
+        # JavaScript runtime support
+        "js_runtimes":
+            {
+                "node": {}
+            },
+
+        "remote_components":
+            [
+                "ejs:github"
+            ]
     }
 
-    if os.path.exists(COOKIES_FILE):
+    # -----------------------------------------------------
+    # Cookies
+    # -----------------------------------------------------
 
-        opts["cookiefile"] = COOKIES_FILE
+    if os.path.exists(
+        COOKIES_FILE
+    ):
+
+        opts["cookiefile"] = (
+            COOKIES_FILE
+        )
 
         logger.info(
-            f"Loaded cookies from {COOKIES_FILE}"
+            f"Loaded cookies from "
+            f"{COOKIES_FILE}"
         )
 
     return opts
 
 
 # =========================================================
-# YT-DLP EXTRACTION WITH FALLBACK
+# YOUTUBE EXTRACTION + FALLBACK
 # =========================================================
 
 def extract_youtube_with_fallback(
@@ -550,7 +728,7 @@ def extract_youtube_with_fallback(
                     ]
                 }
             }
-        ),
+        )
     ]
 
     last_error = None
@@ -559,7 +737,9 @@ def extract_youtube_with_fallback(
 
         try:
 
-            attempt_opts = dict(opts)
+            attempt_opts = dict(
+                opts
+            )
 
             if extractor_args:
 
@@ -581,7 +761,8 @@ def extract_youtube_with_fallback(
                 )
 
             logger.info(
-                f"✅ Extraction successful: {name}"
+                f"✅ YouTube extraction successful: "
+                f"{name}"
             )
 
             return info
@@ -622,9 +803,15 @@ def fetch_thumbnail_sync(
         )
 
         return {
-            "title": info.get("title"),
-            "thumbnail": info.get("thumbnail"),
-            "videoId": info.get("id")
+
+            "title":
+                info.get("title"),
+
+            "thumbnail":
+                info.get("thumbnail"),
+
+            "videoId":
+                info.get("id")
         }
 
     except Exception as e:
@@ -646,10 +833,12 @@ def download_audio_sync(
     url: str
 ) -> Dict[str, Any]:
 
-    video_id = extract_video_id(url)
+    video_id = extract_video_id(
+        url
+    )
 
     # -----------------------------------------------------
-    # DATABASE CACHE
+    # CACHE
     # -----------------------------------------------------
 
     if video_id:
@@ -662,22 +851,42 @@ def download_audio_sync(
         if cached_data:
 
             logger.info(
-                f"Database cache hit: {video_id}"
+                f"Database cache hit: "
+                f"{video_id}"
             )
 
             return {
-                "status": True,
-                "title": cached_data["title"],
-                "duration": cached_data["duration"],
-                "thumbnail": cached_data["thumbnail"],
-                "filename": cached_data["file_name"],
-                "path": cached_data["file_path"],
+
+                "status":
+                    True,
+
+                "title":
+                    cached_data["title"],
+
+                "duration":
+                    cached_data["duration"],
+
+                "thumbnail":
+                    cached_data["thumbnail"],
+
+                "filename":
+                    cached_data["file_name"],
+
+                "path":
+                    cached_data["file_path"],
+
                 "download_url":
                     f"/files/"
                     f"{cached_data['file_name']}",
-                "videoId": video_id,
-                "uploader": "Cached",
-                "filesize": cached_data["file_size"]
+
+                "videoId":
+                    video_id,
+
+                "uploader":
+                    "Cached",
+
+                "filesize":
+                    cached_data["file_size"]
             }
 
         # -------------------------------------------------
@@ -702,23 +911,37 @@ def download_audio_sync(
             ):
 
                 logger.info(
-                    f"Legacy cache hit: {video_id}"
+                    f"Legacy cache hit: "
+                    f"{video_id}"
                 )
 
                 data = {
-                    "videoId": video_id,
+
+                    "videoId":
+                        video_id,
+
                     "title":
                         legacy_file[
                             :-len(
                                 f"_{video_id}.mp3"
                             )
                         ],
-                    "filename": legacy_file,
-                    "path": path,
-                    "type": "mp3",
+
+                    "filename":
+                        legacy_file,
+
+                    "path":
+                        path,
+
+                    "type":
+                        "mp3",
+
                     "filesize":
                         os.path.getsize(path),
-                    "duration": 0,
+
+                    "duration":
+                        0,
+
                     "thumbnail":
                         f"https://i.ytimg.com/"
                         f"vi/{video_id}/"
@@ -736,12 +959,14 @@ def download_audio_sync(
                     f"/files/{legacy_file}"
                 )
 
-                data["uploader"] = "Cached"
+                data["uploader"] = (
+                    "Cached"
+                )
 
                 return data
 
     # -----------------------------------------------------
-    # DOWNLOAD
+    # Download
     # -----------------------------------------------------
 
     logger.info(
@@ -752,15 +977,18 @@ def download_audio_sync(
 
     opts.update({
 
-        # Fast audio source
+        # Prefer direct M4A source
         "format":
-            "140/ba[ext=m4a]/bestaudio/best",
+            "140/"
+            "ba[ext=m4a]/"
+            "bestaudio/best",
 
-        # No thumbnail
-        "writethumbnail": False,
+        "writethumbnail":
+            False,
 
-        # MP3 conversion
+        # Convert downloaded audio to MP3
         "postprocessors": [
+
             {
                 "key":
                     "FFmpegExtractAudio",
@@ -769,37 +997,63 @@ def download_audio_sync(
                     "mp3",
 
                 "preferredquality":
-                    "192",
+                    "192"
             }
         ],
 
+        # -------------------------------------------------
         # SPEED
+        # -------------------------------------------------
+
         "concurrent_fragment_downloads":
             CONCURRENT_FRAGMENTS,
 
         "http_chunk_size":
             HTTP_CHUNK_SIZE,
 
+        # -------------------------------------------------
         # Network
-        "nocheckcertificate": True,
-        "noprogress": True,
-        "quiet": True,
-        "no_warnings": True,
-        "updatetime": False,
+        # -------------------------------------------------
 
-        "clean_infojson": False,
+        "nocheckcertificate":
+            True,
 
-        "retries": 5,
-        "fragment_retries": 5,
-        "socket_timeout": 15,
+        "noprogress":
+            True,
 
+        "quiet":
+            True,
+
+        "no_warnings":
+            True,
+
+        "updatetime":
+            False,
+
+        "clean_infojson":
+            False,
+
+        "retries":
+            5,
+
+        "fragment_retries":
+            5,
+
+        "socket_timeout":
+            15,
+
+        # -------------------------------------------------
         # FFmpeg
+        # -------------------------------------------------
+
         "postprocessor_args": [
+
             "-threads",
             "0",
+
             "-vn",
             "-sn"
-        ],
+        ]
     })
 
     try:
@@ -814,8 +1068,10 @@ def download_audio_sync(
             opts
         ) as ydl:
 
-            filename = ydl.prepare_filename(
-                info
+            filename = (
+                ydl.prepare_filename(
+                    info
+                )
             )
 
         base_path, _ = os.path.splitext(
@@ -826,9 +1082,17 @@ def download_audio_sync(
             f"{base_path}.mp3"
         )
 
+        # -------------------------------------------------
+        # Validate final file
+        # -------------------------------------------------
+
         if (
-            not os.path.isfile(final_path)
-            or os.path.getsize(final_path) == 0
+            not os.path.isfile(
+                final_path
+            )
+            or os.path.getsize(
+                final_path
+            ) == 0
         ):
 
             raise RuntimeError(
@@ -837,24 +1101,37 @@ def download_audio_sync(
             )
 
         logger.info(
-            f"Audio downloaded: {final_path}"
+            f"Audio downloaded: "
+            f"{final_path}"
         )
 
         response_data = {
 
-            "status": True,
+            "status":
+                True,
 
             "title":
-                info.get("title", ""),
+                info.get(
+                    "title",
+                    ""
+                ),
 
             "duration":
-                info.get("duration", 0),
+                info.get(
+                    "duration",
+                    0
+                ),
 
             "thumbnail":
-                info.get("thumbnail", ""),
+                info.get(
+                    "thumbnail",
+                    ""
+                ),
 
             "filename":
-                os.path.basename(final_path),
+                os.path.basename(
+                    final_path
+                ),
 
             "path":
                 final_path,
@@ -864,13 +1141,19 @@ def download_audio_sync(
                 f"{os.path.basename(final_path)}",
 
             "videoId":
-                info.get("id"),
+                info.get(
+                    "id"
+                ),
 
             "uploader":
-                info.get("uploader"),
+                info.get(
+                    "uploader"
+                ),
 
             "filesize":
-                os.path.getsize(final_path)
+                os.path.getsize(
+                    final_path
+                )
         }
 
         save_cached_metadata(
@@ -909,7 +1192,9 @@ def download_video_sync(
     url: str
 ) -> Dict[str, Any]:
 
-    video_id = extract_video_id(url)
+    video_id = extract_video_id(
+        url
+    )
 
     # -----------------------------------------------------
     # CACHE
@@ -925,28 +1210,40 @@ def download_video_sync(
         if cached_data:
 
             logger.info(
-                f"Database cache hit: {video_id}"
+                f"Database cache hit: "
+                f"{video_id}"
             )
 
             return {
-                "status": True,
+
+                "status":
+                    True,
+
                 "title":
                     cached_data["title"],
+
                 "thumbnail":
                     cached_data["thumbnail"],
+
                 "filename":
                     cached_data["file_name"],
+
                 "path":
                     cached_data["file_path"],
+
                 "download_url":
                     f"/files/"
                     f"{cached_data['file_name']}",
+
                 "duration":
                     cached_data["duration"],
+
                 "videoId":
                     video_id,
+
                 "uploader":
                     "Cached",
+
                 "filesize":
                     cached_data["file_size"]
             }
@@ -973,11 +1270,14 @@ def download_video_sync(
             ):
 
                 logger.info(
-                    f"Legacy cache hit: {video_id}"
+                    f"Legacy cache hit: "
+                    f"{video_id}"
                 )
 
                 data = {
-                    "videoId": video_id,
+
+                    "videoId":
+                        video_id,
 
                     "title":
                         legacy_file[
@@ -1018,12 +1318,14 @@ def download_video_sync(
                     f"/files/{legacy_file}"
                 )
 
-                data["uploader"] = "Cached"
+                data["uploader"] = (
+                    "Cached"
+                )
 
                 return data
 
     # -----------------------------------------------------
-    # DOWNLOAD
+    # Download
     # -----------------------------------------------------
 
     logger.info(
@@ -1034,7 +1336,7 @@ def download_video_sync(
 
     opts.update({
 
-        # Up to MAX_VIDEO_QUALITY
+        # Up to configured video quality
         "format":
             f"bv*[height<="
             f"{MAX_VIDEO_QUALITY}]"
@@ -1048,21 +1350,26 @@ def download_video_sync(
         "merge_output_format":
             "mp4",
 
-        # No unnecessary thumbnail work
         "writethumbnail":
             False,
 
         "embedthumbnail":
             False,
 
+        # -------------------------------------------------
         # SPEED
+        # -------------------------------------------------
+
         "concurrent_fragment_downloads":
             CONCURRENT_FRAGMENTS,
 
         "http_chunk_size":
             HTTP_CHUNK_SIZE,
 
+        # -------------------------------------------------
         # Network
+        # -------------------------------------------------
+
         "nocheckcertificate":
             True,
 
@@ -1090,11 +1397,14 @@ def download_video_sync(
         "socket_timeout":
             15,
 
+        # -------------------------------------------------
         # FFmpeg
+        # -------------------------------------------------
+
         "postprocessor_args": [
             "-threads",
             "0"
-        ],
+        ]
     })
 
     try:
@@ -1109,21 +1419,23 @@ def download_video_sync(
             opts
         ) as ydl:
 
-            filename = ydl.prepare_filename(
-                info
+            filename = (
+                ydl.prepare_filename(
+                    info
+                )
             )
 
         base_path, _ = os.path.splitext(
             filename
         )
 
-        # -------------------------------------------------
-        # Find final output
-        # -------------------------------------------------
-
         final_path = (
             f"{base_path}.mp4"
         )
+
+        # -------------------------------------------------
+        # Check possible final extensions
+        # -------------------------------------------------
 
         for ext in (
             ".mp4",
@@ -1136,16 +1448,28 @@ def download_video_sync(
             )
 
             if (
-                os.path.isfile(test_path)
-                and os.path.getsize(test_path) > 0
+                os.path.isfile(
+                    test_path
+                )
+                and os.path.getsize(
+                    test_path
+                ) > 0
             ):
 
                 final_path = test_path
                 break
 
+        # -------------------------------------------------
+        # Validate final file
+        # -------------------------------------------------
+
         if not (
-            os.path.isfile(final_path)
-            and os.path.getsize(final_path) > 0
+            os.path.isfile(
+                final_path
+            )
+            and os.path.getsize(
+                final_path
+            ) > 0
         ):
 
             raise RuntimeError(
@@ -1154,21 +1478,31 @@ def download_video_sync(
             )
 
         logger.info(
-            f"Video downloaded: {final_path}"
+            f"Video downloaded: "
+            f"{final_path}"
         )
 
         response_data = {
 
-            "status": True,
+            "status":
+                True,
 
             "title":
-                info.get("title", ""),
+                info.get(
+                    "title",
+                    ""
+                ),
 
             "thumbnail":
-                info.get("thumbnail", ""),
+                info.get(
+                    "thumbnail",
+                    ""
+                ),
 
             "filename":
-                os.path.basename(final_path),
+                os.path.basename(
+                    final_path
+                ),
 
             "path":
                 final_path,
@@ -1178,16 +1512,25 @@ def download_video_sync(
                 f"{os.path.basename(final_path)}",
 
             "duration":
-                info.get("duration", 0),
+                info.get(
+                    "duration",
+                    0
+                ),
 
             "videoId":
-                info.get("id"),
+                info.get(
+                    "id"
+                ),
 
             "uploader":
-                info.get("uploader"),
+                info.get(
+                    "uploader"
+                ),
 
             "filesize":
-                os.path.getsize(final_path)
+                os.path.getsize(
+                    final_path
+                )
         }
 
         save_cached_metadata(
@@ -1226,6 +1569,7 @@ def download_video_sync(
 async def root():
 
     return {
+
         "name":
             "MAGMA Music API",
 
@@ -1233,7 +1577,19 @@ async def root():
             "2.3.0-Speed",
 
         "status":
-            "online"
+            "online",
+
+        "download_workers":
+            DOWNLOAD_WORKERS,
+
+        "concurrent_fragments":
+            CONCURRENT_FRAGMENTS,
+
+        "http_chunk_size":
+            HTTP_CHUNK_SIZE,
+
+        "max_video_quality":
+            MAX_VIDEO_QUALITY
     }
 
 
@@ -1257,6 +1613,9 @@ async def health_check():
 
         "cache_expiry_hours":
             CACHE_EXPIRE_HOURS,
+
+        "download_workers":
+            DOWNLOAD_WORKERS,
 
         "concurrent_fragments":
             CONCURRENT_FRAGMENTS,
@@ -1319,7 +1678,10 @@ async def search_youtube_music(
 
             artists = ", ".join(
                 [
-                    a.get("name", "")
+                    a.get(
+                        "name",
+                        ""
+                    )
                     for a in r.get(
                         "artists",
                         []
@@ -1333,7 +1695,9 @@ async def search_youtube_music(
             )
 
             thumbnail_url = (
-                thumbnails[-1].get("url")
+                thumbnails[-1].get(
+                    "url"
+                )
                 if thumbnails
                 else None
             )
@@ -1341,16 +1705,22 @@ async def search_youtube_music(
             formatted_results.append({
 
                 "title":
-                    r.get("title"),
+                    r.get(
+                        "title"
+                    ),
 
                 "artist":
                     artists,
 
                 "videoId":
-                    r.get("videoId"),
+                    r.get(
+                        "videoId"
+                    ),
 
                 "duration":
-                    r.get("duration"),
+                    r.get(
+                        "duration"
+                    ),
 
                 "thumbnail":
                     thumbnail_url
@@ -1380,6 +1750,7 @@ async def search_youtube_music(
         raise HTTPException(
             status_code=500,
             detail={
+
                 "error":
                     "Search failed",
 
@@ -1420,6 +1791,7 @@ async def get_thumbnail(
         raise HTTPException(
             status_code=500,
             detail={
+
                 "error":
                     "Failed to fetch thumbnail",
 
@@ -1442,33 +1814,61 @@ async def download_audio(
     )
 ):
 
-    try:
+    # -----------------------------------------------------
+    # GLOBAL DOWNLOAD WORKER CONTROL
+    # -----------------------------------------------------
+    #
+    # If DOWNLOAD_WORKERS=3:
+    #
+    # active download 1 -> allowed
+    # active download 2 -> allowed
+    # active download 3 -> allowed
+    # active download 4 -> waits
+    #
+    # This applies to audio + video together.
+    #
 
-        result = await asyncio.to_thread(
-            download_audio_sync,
-            url
+    async with download_semaphore:
+
+        logger.info(
+            "Audio worker acquired "
+            f"(limit={DOWNLOAD_WORKERS})"
         )
 
-        return JSONResponse(
-            content=result
-        )
+        try:
 
-    except Exception as e:
+            result = await asyncio.to_thread(
+                download_audio_sync,
+                url
+            )
 
-        logger.error(
-            f"Audio download API error: {e}"
-        )
+            return JSONResponse(
+                content=result
+            )
 
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error":
-                    "Audio download failed",
+        except Exception as e:
 
-                "message":
-                    str(e)
-            }
-        )
+            logger.error(
+                f"Audio download API error: {e}"
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+
+                    "error":
+                        "Audio download failed",
+
+                    "message":
+                        str(e)
+                }
+            )
+
+        finally:
+
+            logger.info(
+                "Audio worker released"
+            )
 
 
 # =========================================================
@@ -1484,33 +1884,48 @@ async def download_video(
     )
 ):
 
-    try:
+    # Same global worker pool as audio.
+    async with download_semaphore:
 
-        result = await asyncio.to_thread(
-            download_video_sync,
-            url
+        logger.info(
+            "Video worker acquired "
+            f"(limit={DOWNLOAD_WORKERS})"
         )
 
-        return JSONResponse(
-            content=result
-        )
+        try:
 
-    except Exception as e:
+            result = await asyncio.to_thread(
+                download_video_sync,
+                url
+            )
 
-        logger.error(
-            f"Video download API error: {e}"
-        )
+            return JSONResponse(
+                content=result
+            )
 
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error":
-                    "Video download failed",
+        except Exception as e:
 
-                "message":
-                    str(e)
-            }
-        )
+            logger.error(
+                f"Video download API error: {e}"
+            )
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+
+                    "error":
+                        "Video download failed",
+
+                    "message":
+                        str(e)
+                }
+            )
+
+        finally:
+
+            logger.info(
+                "Video worker released"
+            )
 
 
 # =========================================================
