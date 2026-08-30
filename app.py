@@ -8,7 +8,6 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
-# Naye High-Performance Imports
 import uvloop
 import orjson
 import psutil
@@ -17,17 +16,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import ORJSONResponse, FileResponse
 from dotenv import load_dotenv
 
-# Monitoring & Tracing Imports
 from prometheus_client import make_asgi_app
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 import yt_dlp
 from ytmusicapi import YTMusic
 
-# uvloop setup (Massive speed boost for AsyncIO event loop)
+# Enable ultra-fast event loop
 asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
-# Load environment variables
 load_dotenv()
 
 # Configuration
@@ -40,7 +37,6 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 COOKIES_FILE = "cookies.txt"
 DB_FILE = "cache.db"
 
-# Setup Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -48,22 +44,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure download directory exists
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Global clients
 ytmusic = YTMusic()
 redis_client: redis.Redis = None
 
-# ---------------------------------------------------------
-# DATABASE & CACHE SYSTEM (SQLite WAL + Redis)
-# ---------------------------------------------------------
-
 def init_db():
-    """Initializes the SQLite database with WAL mode for fast writes."""
     try:
         with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            # Enalbing WAL mode for 3x-4x faster database operations
             conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA synchronous=NORMAL;')
             conn.execute('''
@@ -82,7 +70,6 @@ def init_db():
                 )
             ''')
             conn.commit()
-        logger.info("SQLite database (WAL Mode) initialized.")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
 
@@ -102,7 +89,6 @@ def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any
                     conn.commit()
             return None
     except Exception as e:
-        logger.error(f"Error accessing cache DB: {e}")
         return None
 
 def save_cached_metadata(data: Dict[str, Any], file_type: str):
@@ -121,7 +107,6 @@ def save_cached_metadata(data: Dict[str, Any], file_type: str):
         logger.error(f"Error saving to cache DB: {e}")
 
 async def cache_cleanup_task():
-    """Background task to delete old files without blocking the app."""
     while True:
         try:
             expiry_time = time.time() - (CACHE_EXPIRE_HOURS * 3600)
@@ -129,7 +114,6 @@ async def cache_cleanup_task():
                 deleted, db_cleaned = 0, 0
                 with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
                     cur = conn.cursor()
-                    # 1. Sweep disk
                     if os.path.exists(DOWNLOAD_DIR):
                         for entry in os.scandir(DOWNLOAD_DIR):
                             if entry.is_file() and entry.stat().st_mtime < expiry_time:
@@ -139,7 +123,6 @@ async def cache_cleanup_task():
                                     cur.execute("DELETE FROM downloads WHERE file_name = ?", (entry.name,))
                                 except Exception:
                                     pass
-                    # 2. Sweep DB
                     cur.execute("SELECT id, file_path FROM downloads")
                     for record in cur.fetchall():
                         if not os.path.exists(record[1]):
@@ -148,16 +131,10 @@ async def cache_cleanup_task():
                     conn.commit()
                 return deleted, db_cleaned
             
-            deleted, db_cleaned = await asyncio.to_thread(perform_cleanup)
-            if deleted > 0 or db_cleaned > 0:
-                logger.info(f"Cleanup: Deleted {deleted} files, {db_cleaned} DB records.")
+            await asyncio.to_thread(perform_cleanup)
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
         await asyncio.sleep(3600)
-
-# ---------------------------------------------------------
-# FASTAPI LIFESPAN
-# ---------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -165,50 +142,34 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Anysnap MAGMA-API...")
     init_db()
 
-    # Init Redis Connection
     try:
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         await redis_client.ping()
-        logger.info("Redis connected successfully.")
-    except Exception as e:
-        logger.warning(f"Redis connection failed. Cache will be skipped. Error: {e}")
+    except Exception:
         redis_client = None
 
     if COOKIE_URL:
         try:
             urllib.request.urlretrieve(COOKIE_URL, COOKIES_FILE)
-            logger.info("Cookies downloaded.")
         except Exception as e:
             logger.error(f"Failed to download cookies: {e}")
 
     cleanup_worker = asyncio.create_task(cache_cleanup_task())
     yield
-    logger.info("Shutting down Anysnap MAGMA-API...")
     cleanup_worker.cancel()
     if redis_client:
         await redis_client.aclose()
 
-# ---------------------------------------------------------
-# APP INITIALIZATION (With ORJSON default)
-# ---------------------------------------------------------
-
+# FastAPI setup with ORJSONResponse to strictly return JSON
 app = FastAPI(
     title="Anysnap MAGMA-API", 
     version="3.0.0-Optimized", 
     lifespan=lifespan,
-    default_response_class=ORJSONResponse # Forces JSON strictly as requested
+    default_response_class=ORJSONResponse 
 )
 
-# OpenTelemetry Instrumentation
 FastAPIInstrumentor.instrument_app(app)
-
-# Prometheus Metrics Route
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
-
-# ---------------------------------------------------------
-# YT-DLP CORE (Optimized for Extreme Speed)
-# ---------------------------------------------------------
+app.mount("/metrics", make_asgi_app())
 
 def extract_video_id(url: str) -> Optional[str]:
     if not url: return None
@@ -229,13 +190,9 @@ def get_base_ydl_opts() -> Dict[str, Any]:
         'fragment_retries': 10,
         'socket_timeout': 15,
         'continuedl': True,
-        'js_runtimes': {'node': {}},
-        'remote_components': ['ejs:github'],
-        'source_address': '0.0.0.0', # IPv4 bypass
-        'external_downloader': 'aria2c', # ARIA2C parallel downloading
-        'external_downloader_args': {
-            'aria2c': ['-c', '-j', '15', '-x', '15', '-s', '15', '-k', '1M']
-        }
+        'source_address': '0.0.0.0', 
+        'external_downloader': 'aria2c', 
+        'external_downloader_args': {'aria2c': ['-c', '-j', '15', '-x', '15', '-s', '15', '-k', '1M']}
     }
     if os.path.exists(COOKIES_FILE):
         opts['cookiefile'] = COOKIES_FILE
@@ -330,17 +287,12 @@ def download_video_sync(url: str) -> Dict[str, Any]:
     save_cached_metadata(res, "mp4")
     return res
 
-# ---------------------------------------------------------
-# API ROUTES
-# ---------------------------------------------------------
-
 @app.get("/")
 async def root():
     return {"name": "Anysnap MAGMA-API", "version": "3.0.0", "status": "online"}
 
 @app.get("/sysinfo")
 async def system_info():
-    """Monitoring endpoint for Server usage via psutil"""
     return {
         "cpu_percent": psutil.cpu_percent(interval=0.1),
         "ram_used_mb": round(psutil.virtual_memory().used / (1024*1024), 2),
@@ -352,20 +304,15 @@ async def search_youtube_music(
     q: str = Query(..., description="Search query"),
     limit: int = Query(1, description="Number of results to return (max 20)")
 ):
-    """Searches YT Music. Strictly returns JSON, backed by Redis In-Memory caching."""
     try:
         actual_limit = min(max(1, limit), 20)
         cache_key = f"anysnap:search:{q}:{actual_limit}"
 
-        # 1. Try fetching from Redis Cache first
         if redis_client:
             cached_result = await redis_client.get(cache_key)
             if cached_result:
-                logger.info(f"Redis Cache Hit for '{q}'")
-                # Using orjsonResponse handles pre-serialized string or parsed dict
                 return ORJSONResponse(content=orjson.loads(cached_result))
 
-        # 2. Perform fresh search via ytmusicapi
         results = await asyncio.to_thread(ytmusic.search, q, filter="songs", limit=actual_limit)  
         
         formatted_results = []  
@@ -380,14 +327,11 @@ async def search_youtube_music(
 
         final_json = formatted_results[0] if actual_limit == 1 and formatted_results else formatted_results
 
-        # 3. Save result to Redis (expires in 12 hours)
         if redis_client:
             await redis_client.setex(cache_key, 43200, orjson.dumps(final_json))
 
         return ORJSONResponse(content=final_json)
-
     except Exception as e:  
-        logger.error(f"Search error for query '{q}': {e}")  
         raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
 
 @app.get("/download")
@@ -413,7 +357,7 @@ async def get_file(filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path=file_path, filename=filename)
 
+# ✅ FIX: Yahan app:app kar diya gaya hai
 if __name__ == "__main__":
     import uvicorn
-    # Use standard uvicorn configuration with uvloop explicitly configured internally
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False, log_level="info")
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False, log_level="info")
