@@ -3232,376 +3232,9 @@ async def home():
 @app.get("/health")
 async def health():
 
-    backend =
-        get_backend_url()
-
-
-    try:
-
-        async with httpx.AsyncClient(
-
-            timeout=15,
-
-            follow_redirects=True,
-
-        ) as client:
-
-
-            response =
-                await client.get(
-
-                    f"{backend}/health"
-
-                )
-
-
-        try:
-
-            backend_data =
-                response.json()
-
-        except Exception:
-
-            backend_data = {
-
-                "backend_response":
-                    response.text[:500]
-
-            }
-
-
-        return JSONResponse(
-
-            {
-
-                "status":
-                    "ok"
-                    if response.is_success
-                    else "degraded",
-
-                "service":
-                    "MagmaAPI Proxy",
-
-                "backend":
-                    backend,
-
-                "backend_status":
-                    response.status_code,
-
-                "backend_response":
-                    backend_data,
-
-            },
-
-            status_code=
-                200
-                if response.is_success
-                else 502,
-
-        )
-
-
-    except Exception as error:
-
-
-        return JSONResponse(
-
-            {
-
-                "status":
-                    "error",
-
-                "service":
-                    "MagmaAPI Proxy",
-
-                "backend":
-                    backend,
-
-                "error":
-                    str(error),
-
-            },
-
-            status_code=502,
-
-        )
-
-
-# ============================================================
-# GENERIC GET PROXY
-# ============================================================
-
-async def proxy_get(
-    path: str,
-    request: Request,
-    timeout: float = 60.0,
-):
-
-    backend =
-        get_backend_url()
-
-
-    target =
-        (
-            f"{backend}/"
-            f"{path.lstrip('/')}"
-        )
-
-
-    params =
-        list(
-            request
-            .query_params
-            .multi_items()
-        )
-
-
-    try:
-
-
-        async with httpx.AsyncClient(
-
-            timeout=timeout,
-
-            follow_redirects=True,
-
-        ) as client:
-
-
-            response =
-                await client.get(
-
-                    target,
-
-                    params=params,
-
-                )
-
-
-        content_type =
-            response.headers.get(
-
-                "content-type",
-
-                "application/octet-stream",
-
-            )
-
-
-        headers = {}
-
-
-        for name in (
-
-            "content-disposition",
-
-            "cache-control",
-
-            "etag",
-
-            "last-modified",
-
-        ):
-
-
-            if name in response.headers:
-
-                headers[name] =
-                    response.headers[name]
-
-
-        media_type =
-            content_type.split(
-                ";"
-            )[0]
-
-
-        return Response(
-
-            content=response.content,
-
-            status_code=
-                response.status_code,
-
-            media_type=
-                media_type,
-
-            headers=headers,
-
-        )
-
-
-    except httpx.TimeoutException:
-
-
-        return JSONResponse(
-
-            {
-
-                "status":
-                    "error",
-
-                "error":
-                    "Backend request timed out",
-
-                "backend":
-                    backend,
-
-            },
-
-            status_code=504,
-
-        )
-
-
-    except Exception as error:
-
-
-        return JSONResponse(
-
-            {
-
-                "status":
-                    "error",
-
-                "error":
-                    str(error),
-
-                "backend":
-                    backend,
-
-            },
-
-            status_code=502,
-
-        )
-
-
-# ============================================================
-# SEARCH
-# ============================================================
-
-@app.get("/search")
-async def search(
-    request: Request,
-
-    q: str = Query(
-        ...,
-        min_length=1,
-    ),
-
-):
-
-    return await proxy_get(
-
-        "/search",
-
-        request,
-
-        timeout=30,
-
-    )
-
-
-# ============================================================
-# THUMBNAIL
-# ============================================================
-
-@app.get("/thumbnail")
-async def thumbnail(
-    request: Request,
-):
-
-    return await proxy_get(
-
-        "/thumbnail",
-
-        request,
-
-        timeout=30,
-
-    )
-
-
-# ============================================================
-# AUDIO DOWNLOAD
-# ============================================================
-
-@app.get("/download")
-async def download(
-    request: Request,
-):
-
-    return await proxy_get(
-
-        "/download",
-
-        request,
-
-        timeout=300,
-
-    )
-
-
-# ============================================================
-# VIDEO DOWNLOAD
-# ============================================================
-
-@app.get("/video")
-async def video(
-    request: Request,
-):
-
-    return await proxy_get(
-
-        "/video",
-
-        request,
-
-        timeout=300,
-
-    )
-
-
-# ============================================================
-# FILES
-# ============================================================
-
-@app.get(
-    "/files/{filename:path}"
-)
-async def files(
-    request: Request,
-
-    filename: str,
-
-):
-
-    safe_filename =
-        Path(filename).name
-
-
-    return await proxy_get(
-
-        f"/files/{safe_filename}",
-
-        request,
-
-        timeout=120,
-
-    )
-
-# ============================================================
-# HEALTH PROXY
-# ============================================================
-
-@app.get("/health")
-async def health():
-
     backend = get_backend_url()
 
     try:
-
         async with httpx.AsyncClient(
             timeout=15,
             follow_redirects=True,
@@ -3612,39 +3245,29 @@ async def health():
             )
 
         try:
-
             backend_data = response.json()
-
         except Exception:
-
             backend_data = {
                 "backend_response": response.text[:500]
             }
 
         return JSONResponse(
             {
-                "status":
+                "status": (
                     "ok"
                     if response.is_success
-                    else "degraded",
-
-                "service":
-                    "MagmaAPI Proxy",
-
-                "backend":
-                    backend,
-
-                "backend_status":
-                    response.status_code,
-
-                "backend_response":
-                    backend_data,
+                    else "degraded"
+                ),
+                "service": "MagmaAPI Proxy",
+                "backend": backend,
+                "backend_status": response.status_code,
+                "backend_response": backend_data,
             },
-
-            status_code=
+            status_code=(
                 200
                 if response.is_success
-                else 502,
+                else 502
+            ),
         )
 
     except Exception as error:
@@ -3652,17 +3275,10 @@ async def health():
         return JSONResponse(
             {
                 "status": "error",
-
-                "service":
-                    "MagmaAPI Proxy",
-
-                "backend":
-                    backend,
-
-                "error":
-                    str(error),
+                "service": "MagmaAPI Proxy",
+                "backend": backend,
+                "error": str(error),
             },
-
             status_code=502,
         )
 
@@ -3679,15 +3295,10 @@ async def proxy_get(
 
     backend = get_backend_url()
 
-    target = (
-        f"{backend}/"
-        f"{path.lstrip('/')}"
-    )
+    target = f"{backend}/{path.lstrip('/')}"
 
     params = list(
-        request
-        .query_params
-        .multi_items()
+        request.query_params.multi_items()
     )
 
     try:
@@ -3717,18 +3328,14 @@ async def proxy_get(
         ):
 
             if name in response.headers:
-
                 headers[name] = response.headers[name]
 
         media_type = content_type.split(";")[0]
 
         return Response(
             content=response.content,
-
             status_code=response.status_code,
-
             media_type=media_type,
-
             headers=headers,
         )
 
@@ -3737,14 +3344,9 @@ async def proxy_get(
         return JSONResponse(
             {
                 "status": "error",
-
-                "error":
-                    "Backend request timed out",
-
-                "backend":
-                    backend,
+                "error": "Backend request timed out",
+                "backend": backend,
             },
-
             status_code=504,
         )
 
@@ -3753,14 +3355,9 @@ async def proxy_get(
         return JSONResponse(
             {
                 "status": "error",
-
-                "error":
-                    str(error),
-
-                "backend":
-                    backend,
+                "error": str(error),
+                "backend": backend,
             },
-
             status_code=502,
         )
 
@@ -3772,11 +3369,7 @@ async def proxy_get(
 @app.get("/search")
 async def search(
     request: Request,
-
-    q: str = Query(
-        ...,
-        min_length=1,
-    ),
+    q: str = Query(..., min_length=1),
 ):
 
     return await proxy_get(
@@ -3841,7 +3434,6 @@ async def video(
 @app.get("/files/{filename:path}")
 async def files(
     request: Request,
-
     filename: str,
 ):
 
@@ -3868,7 +3460,7 @@ if __name__ == "__main__":
         port=int(
             os.getenv(
                 "PORT",
-                "8000"
+                "8000",
             )
         ),
     )
