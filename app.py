@@ -39,7 +39,7 @@ DB_FILE = "cache.db"
 
 HTML_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "magma-api-yukisbox-style.html"
+    "magma.html"
 )
 
 
