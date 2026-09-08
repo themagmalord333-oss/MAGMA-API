@@ -1,2616 +1,563 @@
-import json
 import os
-from pathlib import Path
+import re
+import time
+import asyncio
+import sqlite3
+import logging
+import urllib.request
+from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi.responses import JSONResponse, FileResponse
+from dotenv import load_dotenv
+import yt_dlp
+from ytmusicapi import YTMusic
 
-import httpx
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+# Load environment variables from .env file
+load_dotenv()
 
+# Configuration from Environment Variables
+DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "downloads")
+CACHE_EXPIRE_HOURS = float(os.getenv("CACHE_EXPIRE_HOURS", "24"))
+MAX_VIDEO_QUALITY = os.getenv("MAX_VIDEO_QUALITY", "720")
+PORT = int(os.getenv("PORT", "8000"))
+COOKIE_URL = os.getenv("COOKIE_URL", "")
+COOKIES_FILE = "cookies.txt"
+DB_FILE = "cache.db"
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-DEFAULT_BACKEND = "https://stamina-porcupine-untimely.ngrok-free.dev"
-
-BACKEND_FILE = Path(__file__).with_name("backend-url.json")
-
-
-def get_backend_url() -> str:
-    """
-    Backend URL priority:
-
-    1. BACKEND_URL environment variable
-    2. backend-url.json
-    3. DEFAULT_BACKEND
-    """
-
-    env_url = os.getenv(
-        "BACKEND_URL",
-        "",
-    ).strip()
-
-    if env_url:
-        return env_url.rstrip("/")
-
-    try:
-        data = json.loads(
-            BACKEND_FILE.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        url = str(
-            data.get("url", "")
-        ).strip()
-
-        if url:
-            return url.rstrip("/")
-
-    except Exception:
-        pass
-
-    return DEFAULT_BACKEND
-
-
-# ============================================================
-# FASTAPI
-# ============================================================
-
-app = FastAPI(
-    title="Magma API",
-    version="1.0",
-    description="Magma API Website and Proxy",
+# Setup Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
 )
+logger = logging.getLogger(__name__)
 
+# Ensure download directory exists
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# ============================================================
-# WEBSITE HTML
-# ============================================================
+# ---------------------------------------------------------
+# DATABASE & CACHE SYSTEM
+# ---------------------------------------------------------
 
-HTML = r"""
-<!DOCTYPE html>
-
-<html lang="en">
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta
-    name="viewport"
-    content="width=device-width,initial-scale=1"
->
-
-<title>Magma API — Developer Portal</title>
-
-<link
-    rel="preconnect"
-    href="https://fonts.googleapis.com"
->
-
-<link
-    rel="preconnect"
-    href="https://fonts.gstatic.com"
->
-
-<link
-    rel="preconnect"
-    href="https://fonts.gstatic.com"
-    crossorigin
->
-
-<link
-    href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Inter:wght@400;500;600;700;800&family=Patrick+Hand&family=JetBrains+Mono:wght@400;500;700&display=swap"
-    rel="stylesheet"
->
-
-<link
-    rel="stylesheet"
-    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
->
-
-<style>
-
-:root{
-    --bg:#f5f3ef;
-    --paper:#ffffff;
-    --ink:#202020;
-    --muted:#707070;
-    --line:#d3d0c9;
-    --gold:#c9991a;
-    --gold2:#9b6e08;
-    --green:#168548;
-    --blue:#2867b2;
-}
-
-*{
-    box-sizing:border-box;
-}
-
-html{
-    scroll-behavior:smooth;
-}
-
-body{
-    margin:0;
-    background:
-        radial-gradient(
-            circle at 10% 20%,
-            #ddd8ce55 0 2px,
-            transparent 3px
-        ),
-        radial-gradient(
-            circle at 88% 60%,
-            #ddd8ce55 0 2px,
-            transparent 3px
-        ),
-        var(--bg);
-    color:var(--ink);
-    font-family:Inter,Arial,sans-serif;
-}
-
-a{
-    text-decoration:none;
-    color:inherit;
-}
-
-button,
-input{
-    font:inherit;
-}
-
-.wrap{
-    width:min(
-        960px,
-        calc(100% - 26px)
-    );
-    margin:auto;
-}
-
-
-/* ============================================================
-   NAV
-   ============================================================ */
-
-.nav{
-    height:62px;
-    background:#ffffffed;
-    border-bottom:1px solid #dedbd4;
-    position:sticky;
-    top:0;
-    z-index:20;
-    backdrop-filter:blur(7px);
-}
-
-.navin{
-    height:100%;
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-}
-
-.brand{
-    font-weight:800;
-    font-size:17px;
-    display:flex;
-    align-items:center;
-}
-
-.brand span{
-    color:var(--gold2);
-}
-
-.mark{
-    width:30px;
-    height:30px;
-    border:2px solid #222;
-    border-radius:50%;
-    display:grid;
-    place-items:center;
-    margin-right:8px;
-    transform:rotate(-5deg);
-}
-
-.links{
-    display:flex;
-    gap:3px;
-}
-
-.links a{
-    font-size:12px;
-    font-weight:700;
-    padding:7px 10px;
-    border-radius:999px;
-}
-
-.links a:hover{
-    background:#f0eee9;
-}
-
-.online{
-    font-size:10px;
-    font-weight:800;
-    color:var(--green);
-    border:1px solid var(--green);
-    border-radius:999px;
-    padding:6px 9px;
-    background:#1685480b;
-}
-
-
-/* ============================================================
-   HERO
-   ============================================================ */
-
-.hero{
-    padding:31px 0 8px;
-    text-align:center;
-}
-
-.paper{
-    background:#fff;
-    border:2px dashed #d0cdc6;
-    border-radius:
-        255px 15px 225px 15px /
-        15px 225px 15px 255px;
-    padding:29px 18px;
-    box-shadow:4px 4px 0 #0000000d;
-}
-
-h1{
-    font-size:clamp(34px,6vw,52px);
-    line-height:1.05;
-    letter-spacing:-2px;
-    margin:0;
-}
-
-.underline{
-    position:relative;
-}
-
-.underline:after{
-    content:"";
-    position:absolute;
-    height:5px;
-    left:0;
-    right:0;
-    bottom:-6px;
-    background:#c9991a33;
-    border-bottom:3px solid var(--gold);
-    border-radius:50%;
-}
-
-.hand{
-    font:700 23px Caveat,cursive;
-    color:var(--gold2);
-    margin-top:9px;
-}
-
-.hero p{
-    max-width:640px;
-    margin:4px auto;
-    color:#707070;
-    font-size:13px;
-    line-height:1.65;
-}
-
-.stamps{
-    display:flex;
-    justify-content:center;
-    gap:7px;
-    flex-wrap:wrap;
-    margin-top:12px;
-}
-
-.stamp{
-    font:700 12px "Patrick Hand",cursive;
-    border:1.5px dashed #777;
-    padding:4px 10px;
-    border-radius:
-        255px 15px 225px 15px /
-        15px 225px 15px 255px;
-    transform:rotate(-1deg);
-}
-
-.stamp:nth-child(2){
-    color:var(--green);
-    border-color:var(--green);
-    transform:rotate(1deg);
-}
-
-.stamp:nth-child(3){
-    color:var(--blue);
-    border-color:var(--blue);
-    transform:rotate(-1.5deg);
-}
-
-.actions{
-    display:flex;
-    justify-content:center;
-    gap:7px;
-    flex-wrap:wrap;
-    margin-top:15px;
-}
-
-.btn{
-    border:1.5px solid #aaa69e;
-    background:#fff;
-    border-radius:
-        255px 15px 225px 15px /
-        15px 225px 15px 255px;
-    padding:8px 14px;
-    font-size:11px;
-    font-weight:800;
-    cursor:pointer;
-    box-shadow:2px 2px 0 #0000000d;
-}
-
-.btn.primary{
-    background:var(--gold);
-    border-color:#a87808;
-    color:#fff;
-}
-
-.note{
-    position:relative;
-    margin:16px auto 0;
-    max-width:690px;
-    background:#fff0a3;
-    border-left:6px solid #e5ad10;
-    padding:10px 15px;
-    text-align:left;
-    transform:rotate(-.4deg);
-    box-shadow:4px 4px 10px #00000010;
-}
-
-.note b{
-    font:700 16px Caveat,cursive;
-    color:#75510d;
-}
-
-.note p{
-    font:700 17px Caveat,cursive;
-    margin:0;
-    color:#4c3713;
-    line-height:1.25;
-}
-
-
-/* ============================================================
-   METRICS
-   ============================================================ */
-
-.metrics{
-    display:grid;
-    grid-template-columns:repeat(4,1fr);
-    gap:9px;
-    margin-top:18px;
-}
-
-.metric{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:11px;
-    padding:13px;
-    text-align:center;
-}
-
-.metric b{
-    font-size:19px;
-}
-
-.metric small{
-    display:block;
-    color:#888;
-    font-size:9px;
-    margin-top:3px;
-}
-
-
-/* ============================================================
-   SECTIONS
-   ============================================================ */
-
-section{
-    padding-top:35px;
-}
-
-.section{
-    text-align:center;
-    margin-bottom:17px;
-}
-
-.scribble{
-    font:700 19px Caveat,cursive;
-    color:var(--gold2);
-}
-
-h2{
-    margin:0;
-    font-size:26px;
-    letter-spacing:-.7px;
-}
-
-.section p{
-    margin:2px auto 0;
-    color:#777;
-    font-size:11px;
-}
-
-
-/* ============================================================
-   DOCUMENTATION
-   ============================================================ */
-
-.doc{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:15px;
-    padding:15px;
-    box-shadow:5px 5px 0 #00000009;
-}
-
-.tabs{
-    display:flex;
-    gap:6px;
-    flex-wrap:wrap;
-    border-bottom:2px dashed var(--line);
-    padding-bottom:10px;
-    margin-bottom:13px;
-}
-
-.tab{
-    border:1.5px solid #ccc;
-    background:#fafafa;
-    border-radius:999px;
-    padding:7px 11px;
-    font-size:10px;
-    font-weight:800;
-    cursor:pointer;
-}
-
-.tab.active{
-    background:var(--gold);
-    color:#fff;
-    border-color:#a87808;
-}
-
-.dochead{
-    display:flex;
-    justify-content:space-between;
-    gap:12px;
-    text-align:left;
-}
-
-.route{
-    font:700 11px JetBrains Mono;
-    color:var(--green);
-}
-
-.title{
-    font-size:19px;
-    font-weight:800;
-    margin-top:3px;
-}
-
-.desc{
-    font-size:11px;
-    color:#777;
-    margin-top:3px;
-}
-
-.grid{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:10px;
-    margin-top:14px;
-}
-
-.code{
-    background:#fafafa;
-    border:1px solid #ddd9d2;
-    border-radius:9px;
-    padding:12px;
-    text-align:left;
-    position:relative;
-}
-
-.code h4{
-    font-size:8px;
-    color:#888;
-    letter-spacing:1px;
-    margin:0 0 7px;
-}
-
-pre{
-    white-space:pre-wrap;
-    word-break:break-word;
-    margin:0;
-    font:10px/1.65 JetBrains Mono;
-    color:#383838;
-}
-
-.copy{
-    position:absolute;
-    right:6px;
-    top:6px;
-    border:1px solid #d0ccc4;
-    background:#fff;
-    border-radius:6px;
-    padding:3px 6px;
-    font-size:8px;
-    cursor:pointer;
-}
-
-.endpoints{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:5px;
-    margin-top:11px;
-    padding-top:10px;
-    border-top:1px solid #e5e2dc;
-}
-
-.ep{
-    border:1px solid #e1ded7;
-    border-radius:7px;
-    padding:7px;
-    text-align:left;
-    font:9px JetBrains Mono;
-    background:#fff;
-}
-
-.ep span{
-    color:var(--green);
-    font-weight:700;
-}
-
-
-/* ============================================================
-   EXAMPLES
-   ============================================================ */
-
-.examples{
-    display:grid;
-    grid-template-columns:1fr 1fr;
-    gap:9px;
-}
-
-.example{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:11px;
-    padding:14px;
-    text-align:left;
-}
-
-.example h3{
-    font-size:13px;
-    margin:0 0 4px;
-}
-
-.example p{
-    font-size:10px;
-    color:#777;
-    margin:0 0 9px;
-}
-
-.dark{
-    background:#1d1d1d;
-    color:#eee;
-    border-radius:8px;
-    padding:12px;
-    position:relative;
-}
-
-.dark pre{
-    color:#eee;
-}
-
-
-/* ============================================================
-   FEATURES
-   ============================================================ */
-
-.cards{
-    display:grid;
-    grid-template-columns:repeat(3,1fr);
-    gap:9px;
-}
-
-.card{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:11px;
-    padding:14px;
-    text-align:left;
-}
-
-.card i{
-    color:var(--gold2);
-}
-
-.card h3{
-    font-size:12px;
-    margin:8px 0 4px;
-}
-
-.card p{
-    font-size:10px;
-    line-height:1.55;
-    color:#777;
-    margin:0;
-}
-
-
-/* ============================================================
-   STATUS
-   ============================================================ */
-
-.status{
-    display:grid;
-    grid-template-columns:1.3fr .7fr;
-    gap:9px;
-}
-
-.statusbox{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:12px;
-    padding:15px;
-    text-align:left;
-}
-
-.statushead{
-    font-size:12px;
-    font-weight:800;
-}
-
-.sdot{
-    display:inline-block;
-    width:8px;
-    height:8px;
-    border-radius:50%;
-    background:var(--green);
-    margin-right:5px;
-}
-
-.srows{
-    display:grid;
-    grid-template-columns:repeat(3,1fr);
-    gap:6px;
-    margin-top:11px;
-}
-
-.sitem{
-    border:1px solid #dfdcd6;
-    border-radius:7px;
-    padding:8px;
-}
-
-.sitem small{
-    display:block;
-    color:#888;
-    font-size:8px;
-}
-
-.sitem b{
-    font-size:9px;
-    color:var(--green);
-}
-
-.uptime{
-    font:700 26px Caveat;
-    color:var(--gold2);
-}
-
-.tiny{
-    font-size:9px;
-    color:#888;
-}
-
-
-/* ============================================================
-   FOOTER
-   ============================================================ */
-
-footer{
-    padding:40px 0 23px;
-}
-
-.foot{
-    background:#fff;
-    border:2px dashed var(--line);
-    border-radius:
-        255px 15px 225px 15px /
-        15px 225px 15px 255px;
-    padding:18px;
-    display:flex;
-    justify-content:space-between;
-    gap:15px;
-    align-items:center;
-}
-
-.footbrand{
-    font-weight:800;
-    font-size:16px;
-}
-
-.footbrand span{
-    color:var(--gold2);
-}
-
-.foot p{
-    font-size:9px;
-    color:#888;
-    margin:4px 0 0;
-}
-
-.flinks{
-    display:flex;
-    gap:11px;
-    font-size:9px;
-    color:#777;
-    font-weight:700;
-}
-
-.copyr{
-    text-align:center;
-    color:#999;
-    font-size:8px;
-    margin-top:12px;
-}
-
-
-/* ============================================================
-   MODAL
-   ============================================================ */
-
-.modal{
-    display:none;
-    position:fixed;
-    inset:0;
-    background:#0008;
-    z-index:100;
-    align-items:center;
-    justify-content:center;
-    padding:15px;
-}
-
-.modal.open{
-    display:flex;
-}
-
-.modalbox{
-    width:min(550px,100%);
-    background:#fff;
-    border:2px dashed #aaa;
-    border-radius:14px;
-    padding:16px;
-    box-shadow:7px 7px 0 #0005;
-}
-
-.modalhead{
-    display:flex;
-    justify-content:space-between;
-}
-
-.close{
-    border:0;
-    background:none;
-    cursor:pointer;
-}
-
-.form{
-    display:flex;
-    gap:6px;
-    margin-top:12px;
-}
-
-.form input{
-    flex:1;
-    border:1px solid #ccc;
-    border-radius:9px;
-    padding:9px;
-    font:10px JetBrains Mono;
-    outline:0;
-}
-
-.result{
-    display:none;
-    background:#1d1d1d;
-    color:#eee;
-    border-radius:8px;
-    padding:11px;
-    margin-top:9px;
-    white-space:pre-wrap;
-    font:9px/1.5 JetBrains Mono;
-}
-
-
-/* ============================================================
-   MOBILE
-   ============================================================ */
-
-@media(max-width:700px){
-
-    .links{
-        display:none;
-    }
-
-    .metrics{
-        grid-template-columns:1fr 1fr;
-    }
-
-    .grid,
-    .examples,
-    .status{
-        grid-template-columns:1fr;
-    }
-
-    .cards{
-        grid-template-columns:1fr 1fr;
-    }
-
-    .endpoints{
-        grid-template-columns:1fr;
-    }
-}
-
-@media(max-width:480px){
-
-    .wrap{
-        width:calc(100% - 16px);
-    }
-
-    .hero{
-        padding-top:20px;
-    }
-
-    .cards{
-        grid-template-columns:1fr;
-    }
-
-    .srows{
-        grid-template-columns:1fr;
-    }
-
-    .foot{
-        display:block;
-    }
-
-    .flinks{
-        margin-top:12px;
-        flex-wrap:wrap;
-    }
-}
-
-</style>
-
-</head>
-
-
-<body>
-
-
-<!-- ============================================================
-     NAVBAR
-     ============================================================ -->
-
-<nav class="nav">
-
-<div class="wrap navin">
-
-<a
-    class="brand"
-    href="/"
->
-
-<span class="mark">
-<i class="fa-solid fa-bolt"></i>
-</span>
-
-Magma<span>API</span>
-
-</a>
-
-
-<div class="links">
-
-<a href="#docs">
-API Docs
-</a>
-
-<a href="#examples">
-Examples
-</a>
-
-<a href="#features">
-Features
-</a>
-
-<a href="#status">
-Status
-</a>
-
-</div>
-
-
-<div class="online">
-
-<i
-    class="fa-solid fa-circle"
-    style="font-size:6px"
-></i>
-
-ONLINE
-
-</div>
-
-</div>
-
-</nav>
-
-
-<!-- ============================================================
-     HERO
-     ============================================================ -->
-
-<header class="hero">
-
-<div class="wrap">
-
-<div class="paper">
-
-<h1>
-
-Your API.<br>
-
-<span class="underline">
-Simple to use.
-</span>
-
-</h1>
-
-
-<div class="hand">
-
-Built for developers who just want the endpoint.
-
-</div>
-
-
-<p>
-
-Magma API provides straightforward REST endpoints for
-search, audio, video and service information.
-
-</p>
-
-
-<div class="stamps">
-
-<span class="stamp">
-<i class="fa-solid fa-code"></i>
-REST API
-</span>
-
-<span class="stamp">
-<i class="fa-solid fa-bolt"></i>
-Fast
-</span>
-
-<span class="stamp">
-<i class="fa-solid fa-file-code"></i>
-JSON
-</span>
-
-<span class="stamp">
-<i class="fa-solid fa-shield-halved"></i>
-Reliable
-</span>
-
-</div>
-
-
-<div class="actions">
-
-<a
-    class="btn primary"
-    href="#docs"
->
-
-<i class="fa-solid fa-book-open"></i>
-API Docs
-
-</a>
-
-
-<button
-    class="btn"
-    onclick="openTester()"
->
-
-<i class="fa-solid fa-flask"></i>
-Test API
-
-</button>
-
-</div>
-
-</div>
-
-
-<div class="note">
-
-<b>
-Quick note
-</b>
-
-<p>
-
-Pick an endpoint below, copy the example and replace
-the base URL with this API.
-
-</p>
-
-</div>
-
-</div>
-
-</header>
-
-
-<!-- ============================================================
-     MAIN
-     ============================================================ -->
-
-<main class="wrap">
-
-
-<!-- ============================================================
-     METRICS
-     ============================================================ -->
-
-<div class="metrics">
-
-<div class="metric">
-<b>REST</b>
-<small>Interface</small>
-</div>
-
-<div class="metric">
-<b>JSON</b>
-<small>Responses</small>
-</div>
-
-<div class="metric">
-<b>24/7</b>
-<small>Service</small>
-</div>
-
-<div class="metric">
-<b>v1</b>
-<small>API version</small>
-</div>
-
-</div>
-
-
-<!-- ============================================================
-     DOCUMENTATION
-     ============================================================ -->
-
-<section id="docs">
-
-<div class="section">
-
-<div class="scribble">
-✎ developer notebook
-</div>
-
-<h2>
-API Documentation
-</h2>
-
-<p>
-Small, practical documentation — no giant dashboard.
-</p>
-
-</div>
-
-
-<div class="doc">
-
-<div class="tabs">
-
-<button
-    class="tab active"
-    data-api="search"
->
-Search
-</button>
-
-<button
-    class="tab"
-    data-api="download"
->
-Download
-</button>
-
-<button
-    class="tab"
-    data-api="video"
->
-Video
-</button>
-
-<button
-    class="tab"
-    data-api="health"
->
-Health
-</button>
-
-</div>
-
-
-<div class="dochead">
-
-<div>
-
-<div
-    class="route"
-    id="route"
->
-GET /search
-</div>
-
-<div
-    class="title"
-    id="title"
->
-Search media
-</div>
-
-<div
-    class="desc"
-    id="description"
->
-Search and return media information.
-</div>
-
-</div>
-
-
-<button
-    class="btn"
-    onclick="openTester()"
->
-Try it
-</button>
-
-</div>
-
-
-<div class="grid">
-
-<div class="code">
-
-<button
-    class="copy"
-    onclick="copyCode('request',this)"
->
-Copy
-</button>
-
-<h4>
-REQUEST
-</h4>
-
-<pre id="request">GET /search?q=hello
-Accept: application/json</pre>
-
-</div>
-
-
-<div class="code">
-
-<button
-    class="copy"
-    onclick="copyCode('response',this)"
->
-Copy
-</button>
-
-<h4>
-RESPONSE
-</h4>
-
-<pre id="response">{
-  "status":"success",
-  "results":[]
-}</pre>
-
-</div>
-
-</div>
-
-
-<div class="endpoints">
-
-<div class="ep">
-<span>GET</span>
- /search — search media
-</div>
-
-<div class="ep">
-<span>GET</span>
- /download — audio
-</div>
-
-<div class="ep">
-<span>GET</span>
- /video — video
-</div>
-
-<div class="ep">
-<span>GET</span>
- /health — status
-</div>
-
-</div>
-
-</div>
-
-</section>
-
-
-<!-- ============================================================
-     EXAMPLES
-     ============================================================ -->
-
-<section id="examples">
-
-<div class="section">
-
-<div class="scribble">
-✎ copy & paste
-</div>
-
-<h2>
-Integration Examples
-</h2>
-
-<p>
-Use the API from a terminal or your own application.
-</p>
-
-</div>
-
-
-<div class="examples">
-
-<div class="example">
-
-<h3>
-<i class="fa-solid fa-terminal"></i>
-cURL
-</h3>
-
-<p>
-Simple terminal request.
-</p>
-
-<div class="dark">
-
-<button
-    class="copy"
-    onclick="copyCode('curl',this)"
->
-Copy
-</button>
-
-<pre id="curl">curl "YOUR_VERCEL_URL/search?q=hello"</pre>
-
-</div>
-
-</div>
-
-
-<div class="example">
-
-<h3>
-<i class="fa-brands fa-js"></i>
-JavaScript
-</h3>
-
-<p>
-Fetch the JSON response.
-</p>
-
-<div class="dark">
-
-<button
-    class="copy"
-    onclick="copyCode('js',this)"
->
-Copy
-</button>
-
-<pre id="js">const r = await fetch(
-  "/search?q=hello"
-);
-
-const data = await r.json();</pre>
-
-</div>
-
-</div>
-
-</div>
-
-</section>
-
-
-<!-- ============================================================
-     FEATURES
-     ============================================================ -->
-
-<section id="features">
-
-<div class="section">
-
-<div class="scribble">
-✎ why Magma API
-</div>
-
-<h2>
-Made for actual use
-</h2>
-
-<p>
-Useful features without pretending to be a giant SaaS dashboard.
-</p>
-
-</div>
-
-
-<div class="cards">
-
-<div class="card">
-
-<i class="fa-solid fa-bolt"></i>
-
-<h3>
-Fast API
-</h3>
-
-<p>
-Vercel handles the public API layer while the media
-backend stays on the server.
-</p>
-
-</div>
-
-
-<div class="card">
-
-<i class="fa-solid fa-magnifying-glass"></i>
-
-<h3>
-Search
-</h3>
-
-<p>
-Search requests are forwarded to the real backend.
-</p>
-
-</div>
-
-
-<div class="card">
-
-<i class="fa-solid fa-music"></i>
-
-<h3>
-Audio
-</h3>
-
-<p>
-Audio requests are forwarded to the downloader backend.
-</p>
-
-</div>
-
-
-<div class="card">
-
-<i class="fa-solid fa-video"></i>
-
-<h3>
-Video
-</h3>
-
-<p>
-Video requests are forwarded to the downloader backend.
-</p>
-
-</div>
-
-
-<div class="card">
-
-<i class="fa-solid fa-link"></i>
-
-<h3>
-Single URL
-</h3>
-
-<p>
-Users only need the Vercel domain instead of knowing
-the backend URL.
-</p>
-
-</div>
-
-
-<div class="card">
-
-<i class="fa-solid fa-code"></i>
-
-<h3>
-Developer friendly
-</h3>
-
-<p>
-Plain REST endpoints and JSON responses.
-</p>
-
-</div>
-
-</div>
-
-</section>
-
-
-<!-- ============================================================
-     STATUS
-     ============================================================ -->
-
-<section id="status">
-
-<div class="section">
-
-<div class="scribble">
-✎ little green light
-</div>
-
-<h2>
-Service Status
-</h2>
-
-<p>
-Live status is checked through the backend.
-</p>
-
-</div>
-
-
-<div class="status">
-
-<div class="statusbox">
-
-<div class="statushead">
-
-<span class="sdot"></span>
-
-<span id="statusText">
-Checking backend…
-</span>
-
-</div>
-
-
-<div class="srows">
-
-<div class="sitem">
-
-<small>
-API
-</small>
-
-<b id="apiStatus">
-Checking
-</b>
-
-</div>
-
-
-<div class="sitem">
-
-<small>
-Search
-</small>
-
-<b>
-Ready
-</b>
-
-</div>
-
-
-<div class="sitem">
-
-<small>
-Downloads
-</small>
-
-<b>
-Ready
-</b>
-
-</div>
-
-</div>
-
-</div>
-
-
-<div class="statusbox">
-
-<div class="uptime">
-API v1
-</div>
-
-<div class="tiny">
-Public base: this Vercel URL
-</div>
-
-</div>
-
-</div>
-
-</section>
-
-</main>
-
-
-<!-- ============================================================
-     FOOTER
-     ============================================================ -->
-
-<footer>
-
-<div class="wrap">
-
-<div class="foot">
-
-<div>
-
-<div class="footbrand">
-Magma<span>API</span>
-</div>
-
-<p>
-Built to be useful, not noisy.
-</p>
-
-</div>
-
-
-<div class="flinks">
-
-<a href="#docs">
-API Docs
-</a>
-
-<a href="#examples">
-Examples
-</a>
-
-<a href="#status">
-Status
-</a>
-
-<a href="/docs">
-Swagger
-</a>
-
-</div>
-
-</div>
-
-
-<div class="copyr">
-© 2026 Magma API · Developer Portal
-</div>
-
-</div>
-
-</footer>
-
-
-<!-- ============================================================
-     TEST MODAL
-     ============================================================ -->
-
-<div
-    class="modal"
-    id="modal"
->
-
-<div class="modalbox">
-
-<div class="modalhead">
-
-<div>
-
-<div class="scribble">
-Live test
-</div>
-
-<b>
-Try an API endpoint
-</b>
-
-</div>
-
-
-<button
-    class="close"
-    onclick="closeTester()"
->
-
-<i class="fa-solid fa-xmark"></i>
-
-</button>
-
-</div>
-
-
-<div class="form">
-
-<input
-    id="testurl"
-    value="/health"
->
-
-<button
-    class="btn primary"
-    onclick="runTest()"
->
-Run
-</button>
-
-</div>
-
-
-<div
-    class="result"
-    id="result"
-></div>
-
-</div>
-
-</div>
-
-
-<!-- ============================================================
-     JAVASCRIPT
-     ============================================================ -->
-
-<script>
-
-const api = {
-
-    search: [
-
-        "GET /search",
-
-        "Search media",
-
-        "Search and return media information.",
-
-        `GET /search?q=hello
-Accept: application/json`,
-
-        `{
-  "status":"success",
-  "results":[]
-}`
-
-    ],
-
-    download: [
-
-        "GET /download",
-
-        "Audio download",
-
-        "Process a media URL as audio.",
-
-        `GET /download?url=MEDIA_URL
-Accept: application/json`,
-
-        `{
-  "status":"success",
-  "type":"audio",
-  "file":"track.mp3"
-}`
-
-    ],
-
-    video: [
-
-        "GET /video",
-
-        "Video download",
-
-        "Process a media URL as video.",
-
-        `GET /video?url=MEDIA_URL
-Accept: application/json`,
-
-        `{
-  "status":"success",
-  "type":"video",
-  "file":"video.mp4"
-}`
-
-    ],
-
-    health: [
-
-        "GET /health",
-
-        "Health check",
-
-        "Check whether the API is responding.",
-
-        `GET /health
-Accept: application/json`,
-
-        `{
-  "status":"ok",
-  "service":"MagmaAPI",
-  "version":"1.0"
-}`
-
-    ]
-
-};
-
-
-document
-.querySelectorAll(".tab")
-.forEach(button => {
-
-    button.onclick = () => {
-
-        document
-        .querySelectorAll(".tab")
-        .forEach(item => {
-
-            item.classList.remove(
-                "active"
-            );
-
-        });
-
-        button.classList.add(
-            "active"
-        );
-
-        const data =
-            api[
-                button.dataset.api
-            ];
-
-        document
-        .getElementById("route")
-        .textContent =
-            data[0];
-
-        document
-        .getElementById("title")
-        .textContent =
-            data[1];
-
-        document
-        .getElementById("description")
-        .textContent =
-            data[2];
-
-        document
-        .getElementById("request")
-        .textContent =
-            data[3];
-
-        document
-        .getElementById("response")
-        .textContent =
-            data[4];
-
-    };
-
-});
-
-
-function copyCode(
-    id,
-    button
-){
-
-    const element =
-        document.getElementById(
-            id
-        );
-
-    if(!element){
-        return;
-    }
-
-    const text =
-        element.innerText;
-
-    if(navigator.clipboard){
-
-        navigator
-        .clipboard
-        .writeText(text);
-
-    }
-
-    const old =
-        button.textContent;
-
-    button.textContent =
-        "Copied";
-
-    setTimeout(() => {
-
-        button.textContent =
-            old;
-
-    },900);
-
-}
-
-
-function openTester(){
-
-    document
-    .getElementById("modal")
-    .classList.add("open");
-
-}
-
-
-function closeTester(){
-
-    document
-    .getElementById("modal")
-    .classList.remove("open");
-
-}
-
-
-async function runTest(){
-
-    const url =
-        document
-        .getElementById(
-            "testurl"
-        )
-        .value
-        .trim();
-
-    const output =
-        document
-        .getElementById(
-            "result"
-        );
-
-    output.style.display =
-        "block";
-
-    output.textContent =
-        "Requesting…";
-
-    try{
-
-        const started =
-            performance.now();
-
-        const response =
-            await fetch(
-                url,
-                {
-                    headers:{
-                        Accept:
-                            "application/json"
-                    }
-                }
-            );
-
-        const elapsed =
-            Math.round(
-                performance.now()
-                -
-                started
-            );
-
-        const body =
-            await response.text();
-
-        output.textContent =
-            "HTTP "
-            +
-            response.status
-            +
-            " · "
-            +
-            elapsed
-            +
-            " ms\n\n"
-            +
-            body;
-
-    }catch(error){
-
-        output.textContent =
-            "Request failed: "
-            +
-            error.message;
-
-    }
-
-}
-
-
-document
-.getElementById("modal")
-.onclick = event => {
-
-    if(
-        event.target.id ===
-        "modal"
-    ){
-
-        closeTester();
-
-    }
-
-};
-
-
-async function checkStatus(){
-
-    try{
-
-        const response =
-            await fetch(
-                "/health",
-                {
-                    cache:"no-store"
-                }
-            );
-
-        if(response.ok){
-
-            document
-            .getElementById(
-                "statusText"
-            )
-            .textContent =
-                "All systems operational";
-
-            document
-            .getElementById(
-                "apiStatus"
-            )
-            .textContent =
-                "Operational";
-
-        }else{
-
-            throw new Error(
-                "Backend error"
-            );
-
-        }
-
-    }catch(error){
-
-        document
-        .getElementById(
-            "statusText"
-        )
-        .textContent =
-            "Backend unavailable";
-
-        document
-        .getElementById(
-            "apiStatus"
-        )
-        .textContent =
-            "Offline";
-
-    }
-
-}
-
-
-checkStatus();
-
-</script>
-
-</body>
-
-</html>
-"""
-
-
-# ============================================================
-# HOME / WEBSITE
-# ============================================================
-
-@app.get(
-    "/",
-    response_class=HTMLResponse,
-)
-async def home():
-
-    return HTMLResponse(
-        content=HTML
-    )
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.get("/health")
-async def health():
-
-    backend = get_backend_url()
-
+def init_db():
+    """Initializes the SQLite database for caching metadata safely."""
     try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id TEXT,
+                    title TEXT,
+                    file_name TEXT,
+                    file_path TEXT,
+                    file_type TEXT,
+                    file_size INTEGER,
+                    duration INTEGER,
+                    created_time REAL,
+                    thumbnail TEXT,
+                    UNIQUE(video_id, file_type)
+                )
+            ''')
+            conn.commit()
+        logger.info("SQLite database initialized.")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
 
-        async with httpx.AsyncClient(
-            timeout=15,
-            follow_redirects=True,
-        ) as client:
+def get_cached_metadata(video_id: str, file_type: str) -> Optional[Dict[str, Any]]:
+    """Retrieves cached metadata from SQLite and verifies file existence."""
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM downloads WHERE video_id = ? AND file_type = ?", (video_id, file_type))
+            row = cur.fetchone()
 
-            response = await client.get(
-                f"{backend}/health"
-            )
+            if row:
+                if os.path.isfile(row['file_path']) and os.path.getsize(row['file_path']) > 0:
+                    return dict(row)
+                else:
+                    logger.warning(f"File {row['file_name']} missing from disk. Removing DB entry.")
+                    cur.execute("DELETE FROM downloads WHERE id = ?", (row['id'],))
+                    conn.commit()
+            return None
+    except Exception as e:
+        logger.error(f"Error accessing cache DB: {e}")
+        return None
 
+def save_cached_metadata(data: Dict[str, Any], file_type: str):
+    """Saves download metadata to SQLite."""
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute('''
+                INSERT OR REPLACE INTO downloads 
+                (video_id, title, file_name, file_path, file_type, file_size, duration, created_time, thumbnail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                data['videoId'], data['title'], data['filename'], data['path'], 
+                file_type, data['filesize'], data['duration'], time.time(), data['thumbnail']
+            ))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving to cache DB: {e}")
+
+def find_legacy_cached_file(video_id: str, ext: str) -> Optional[str]:
+    """Fallback to check un-indexed files downloaded before SQLite was added."""
+    if not video_id: return None
+    suffix = f"_{video_id}.{ext}"
+    try:
+        with os.scandir(DOWNLOAD_DIR) as entries:
+            for entry in entries:
+                if entry.name.endswith(suffix):
+                    return entry.name
+    except Exception as e:
+        logger.error(f"Error reading {DOWNLOAD_DIR}: {e}")
+    return None
+
+async def cache_cleanup_task():
+    """Background task to delete old files and clean up the database without blocking the event loop."""
+    while True:
         try:
+            logger.info("Running advanced cache cleanup...")
+            expiry_time = time.time() - (CACHE_EXPIRE_HOURS * 3600)
 
-            backend_data = response.json()
+            def perform_cleanup():
+                deleted_files = 0
+                db_cleaned = 0
+                with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
 
-        except Exception:
+                    # 1. Scan actual disk directory for expired files (covers orphans too)
+                    if os.path.exists(DOWNLOAD_DIR):
+                        for entry in os.scandir(DOWNLOAD_DIR):
+                            if entry.is_file():
+                                file_stat = entry.stat()
+                                # st_mtime safely protects active downloads from being deleted
+                                if file_stat.st_mtime < expiry_time:
+                                    try:
+                                        os.remove(entry.path)
+                                        deleted_files += 1
+                                        cur.execute("DELETE FROM downloads WHERE file_name = ?", (entry.name,))
+                                    except Exception as e:
+                                        logger.warning(f"Could not delete old file {entry.name}: {e}")
 
-            backend_data = {
-                "backend_response":
-                    response.text[:500]
+                    # 2. Sweep database for phantom records
+                    cur.execute("SELECT id, file_path FROM downloads")
+                    all_records = cur.fetchall()
+                    for record in all_records:
+                        if not os.path.exists(record['file_path']):
+                            cur.execute("DELETE FROM downloads WHERE id = ?", (record['id'],))
+                            db_cleaned += 1
+
+                    conn.commit()
+                return deleted_files, db_cleaned
+
+            # Execute blocking I/O on a separate thread
+            deleted_files, db_cleaned = await asyncio.to_thread(perform_cleanup)
+
+            if deleted_files > 0 or db_cleaned > 0:
+                logger.info(f"Cleanup complete: Deleted {deleted_files} old files on disk, cleared {db_cleaned} orphaned DB records.")
+            else:
+                logger.info("Cleanup complete: No expired files found.")
+
+        except Exception as e:
+            logger.error(f"Cache cleanup encountered an error (will retry next cycle): {e}")
+
+        # Run cleanup every hour safely
+        await asyncio.sleep(3600)
+
+# ---------------------------------------------------------
+# FASTAPI LIFESPAN (STARTUP/SHUTDOWN)
+# ---------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting MAGMA Music API...")
+    init_db()
+
+    if COOKIE_URL:
+        try:
+            urllib.request.urlretrieve(COOKIE_URL, COOKIES_FILE)
+            logger.info(f"Successfully downloaded cookies.txt from COOKIE_URL")
+        except Exception as e:
+            logger.error(f"Failed to download cookies from COOKIE_URL: {e}")
+
+    # Start background cleanup loop
+    cleanup_worker = asyncio.create_task(cache_cleanup_task())
+
+    yield # App runs here
+
+    # Shutdown
+    logger.info("Shutting down MAGMA Music API...")
+    cleanup_worker.cancel()
+
+# ---------------------------------------------------------
+# APP INITIALIZATION
+# ---------------------------------------------------------
+
+app = FastAPI(title="YouTube Downloader & Search API", version="2.2.0-Production", lifespan=lifespan)
+ytmusic = YTMusic()
+
+# ---------------------------------------------------------
+# YT-DLP HELPERS & DOWNLOADERS
+# ---------------------------------------------------------
+
+def extract_video_id(url: str) -> Optional[str]:
+    """Extracts the 11-character YouTube Video ID from a given URL."""
+    if not url: return None
+    if re.match(r"^[0-9A-Za-z_-]{11}$", url): return url
+    pattern = r"(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/v\/)([0-9A-Za-z_-]{11})"  
+    match = re.search(pattern, url)  
+    if match: return match.group(1)  
+    match = re.search(r"[0-9A-Za-z_-]{11}", url)  
+    return match.group(0) if match else None
+
+def get_base_ydl_opts() -> Dict[str, Any]:
+    opts = {
+        'outtmpl': f'{DOWNLOAD_DIR}/%(title).150s_%(id)s.%(ext)s',
+        'restrictfilenames': True,
+        'noplaylist': True,
+        'quiet': False,
+        'no_warnings': False,
+        'retries': 10,
+        'fragment_retries': 10,
+        'socket_timeout': 30,
+        'continuedl': True, # Enable Download Resume
+        'js_runtimes': {'node': {}},
+        'remote_components': ['ejs:github']
+    }
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+        logger.info(f"Loaded cookies from {COOKIES_FILE}")
+    return opts
+
+def fetch_thumbnail_sync(url: str) -> Dict[str, Any]:
+    opts = get_base_ydl_opts()
+    opts['skip_download'] = True
+    try:  
+        with yt_dlp.YoutubeDL(opts) as ydl:  
+            info = ydl.extract_info(url, download=False)  
+            return {  
+                "title": info.get("title"),  
+                "thumbnail": info.get("thumbnail"),  
+                "videoId": info.get("id")  
+            }  
+    except Exception as e:  
+        logger.error(f"Thumbnail fetch error: {e}")  
+        raise RuntimeError(f"Failed to fetch thumbnail: {str(e)}")
+
+def download_audio_sync(url: str) -> Dict[str, Any]:
+    video_id = extract_video_id(url)
+
+    if video_id:
+        cached_data = get_cached_metadata(video_id, "mp3")
+        if cached_data:
+            logger.info(f"Database cache hit! Returning audio for {video_id}")
+            return {
+                "status": True,
+                "title": cached_data["title"],
+                "duration": cached_data["duration"],
+                "thumbnail": cached_data["thumbnail"],
+                "filename": cached_data["file_name"],
+                "path": cached_data["file_path"],
+                "download_url": f"/files/{cached_data['file_name']}",
+                "videoId": video_id,
+                "uploader": "Cached",
+                "filesize": cached_data["file_size"]
             }
 
-        return JSONResponse(
+        legacy_file = find_legacy_cached_file(video_id, "mp3")
+        if legacy_file:
+            path = os.path.join(DOWNLOAD_DIR, legacy_file)
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                logger.info(f"Legacy disk cache hit for {video_id}. Saving to DB.")
+                data = {
+                    "videoId": video_id,
+                    "title": legacy_file[:-len(f"_{video_id}.mp3")],
+                    "filename": legacy_file,
+                    "path": path,
+                    "type": "mp3",
+                    "filesize": os.path.getsize(path),
+                    "duration": 0,
+                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                }
+                save_cached_metadata(data, "mp3")
+                data["status"] = True
+                data["download_url"] = f"/files/{legacy_file}"
+                data["uploader"] = "Cached"
+                return data
 
-            {
-                "status":
-                    (
-                        "ok"
-                        if response.is_success
-                        else "degraded"
-                    ),
+    logger.info(f"Starting audio download for: {url}")
+    opts = get_base_ydl_opts()  
 
-                "service":
-                    "MagmaAPI Proxy",
+    # ⚡ MAXIMUM SPEED AUDIO OPTIMIZATIONS
+    opts.update({  
+        'format': '140/ba[ext=m4a]/bestaudio/best', # Fast 128k AAC source for lightning quick mp3 conversion
+        'writethumbnail': False,
+        'postprocessors': [{  
+            'key': 'FFmpegExtractAudio',  
+            'preferredcodec': 'mp3',  
+            'preferredquality': '192',  
+        }],
+        'extractor_args': {'youtube': ['player_client=ios,android,web']}, # iOS/Android bypasses JS throttling
+        'concurrent_fragment_downloads': 15,    
+        'http_chunk_size': 10485760,            # 10MB HTTP chunking to max out connection
+        'nocheckcertificate': True,
+        'noprogress': True,
+        'quiet': True,
+        'no_warnings': True,
+        'updatetime': False,                    # Stops wasted Disk I/O modifying timestamps
+        'clean_infojson': False,
+        'retries': 5,                           
+        'fragment_retries': 5,                  
+        'socket_timeout': 15,
+        'postprocessor_args': [
+            '-threads', '0',                    # Force FFmpeg to use ALL CPU cores for MP3 encoding
+            '-vn', '-sn'                        # Strictly strip video/subs inside FFmpeg processing
+        ]
+    })  
 
-                "backend":
-                    backend,
+    try:  
+        with yt_dlp.YoutubeDL(opts) as ydl:  
+            info = ydl.extract_info(url, download=True)  
+            filename = ydl.prepare_filename(info)  
+            base_path, _ = os.path.splitext(filename)  
+            final_path = f"{base_path}.mp3"  
 
-                "backend_status":
-                    response.status_code,
+            if not os.path.isfile(final_path) or os.path.getsize(final_path) == 0:  
+                raise RuntimeError("Downloaded file is missing or empty.")  
 
-                "backend_response":
-                    backend_data,
-            },
+            logger.info(f"Successfully downloaded audio: {final_path}")  
 
-            status_code=(
-                200
-                if response.is_success
-                else 502
-            ),
-        )
+            response_data = {  
+                "status": True,  
+                "title": info.get("title", ""),  
+                "duration": info.get("duration", 0),  
+                "thumbnail": info.get("thumbnail", ""),  
+                "filename": os.path.basename(final_path),  
+                "path": final_path,  
+                "download_url": f"/files/{os.path.basename(final_path)}",  
+                "videoId": info.get("id"),  
+                "uploader": info.get("uploader"),  
+                "filesize": os.path.getsize(final_path)  
+            }
 
-    except Exception as error:
+            save_cached_metadata(response_data, "mp3")
+            return response_data
 
-        return JSONResponse(
+    except yt_dlp.utils.DownloadError as e:  
+        logger.error(f"yt-dlp error downloading audio for {url}: {e}")  
+        raise RuntimeError(f"Download Error: {str(e)}")  
+    except Exception as e:  
+        logger.error(f"Unexpected error downloading audio for {url}: {e}")  
+        raise RuntimeError(f"Internal Server Error: {str(e)}")
 
-            {
-                "status":
-                    "error",
+def download_video_sync(url: str) -> Dict[str, Any]:
+    video_id = extract_video_id(url)
 
-                "service":
-                    "MagmaAPI Proxy",
+    if video_id:
+        cached_data = get_cached_metadata(video_id, "mp4")
+        if cached_data:
+            logger.info(f"Database cache hit! Returning video for {video_id}")
+            return {
+                "status": True,
+                "title": cached_data["title"],
+                "thumbnail": cached_data["thumbnail"],
+                "filename": cached_data["file_name"],
+                "path": cached_data["file_path"],
+                "download_url": f"/files/{cached_data['file_name']}",
+                "duration": cached_data["duration"],
+                "videoId": video_id,
+                "uploader": "Cached",
+                "filesize": cached_data["file_size"]
+            }
 
-                "backend":
-                    backend,
+        legacy_file = find_legacy_cached_file(video_id, "mp4")
+        if legacy_file:
+            path = os.path.join(DOWNLOAD_DIR, legacy_file)
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                logger.info(f"Legacy disk cache hit for {video_id}. Saving to DB.")
+                data = {
+                    "videoId": video_id,
+                    "title": legacy_file[:-len(f"_{video_id}.mp4")],
+                    "filename": legacy_file,
+                    "path": path,
+                    "type": "mp4",
+                    "filesize": os.path.getsize(path),
+                    "duration": 0,
+                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                }
+                save_cached_metadata(data, "mp4")
+                data["status"] = True
+                data["download_url"] = f"/files/{legacy_file}"
+                data["uploader"] = "Cached"
+                return data
 
-                "error":
-                    str(error),
-            },
+    logger.info(f"Starting video download for: {url}")
+    opts = get_base_ydl_opts()  
 
-            status_code=502,
-        )
+    # ⚡ MAXIMUM SPEED VIDEO OPTIMIZATIONS
+    opts.update({  
+        'format': f'bv*[height<={MAX_VIDEO_QUALITY}][ext=mp4]+ba[ext=m4a]/b[height<={MAX_VIDEO_QUALITY}][ext=mp4]/best',  
+        'merge_output_format': 'mp4',
+        'writethumbnail': False,
+        'embedthumbnail': False,
+        'extractor_args': {'youtube': ['player_client=ios,android,web']},
+        'concurrent_fragment_downloads': 15,    
+        'http_chunk_size': 10485760,            
+        'nocheckcertificate': True,
+        'noprogress': True,
+        'quiet': True,
+        'no_warnings': True,
+        'updatetime': False,
+        'clean_infojson': False,
+        'retries': 5,
+        'fragment_retries': 5,
+        'socket_timeout': 15,
+        'postprocessor_args': [
+            '-threads', '0'                     # Accelerates the merging process via FFmpeg across all cores
+        ]
+        # ⚠️ Removed FFmpegVideoConvertor: The merge_output_format='mp4' flag merges natively without wasting CPU re-encoding.
+    })  
 
+    try:  
+        with yt_dlp.YoutubeDL(opts) as ydl:  
+            info = ydl.extract_info(url, download=True)  
+            filename = ydl.prepare_filename(info)  
+            base_path, _ = os.path.splitext(filename)  
 
-# ============================================================
-# GENERIC GET PROXY
-# ============================================================
+            final_path = f"{base_path}.mp4"
+            for ext in [".mp4", ".webm", ".mkv"]:
+                test_path = f"{base_path}{ext}"
+                if os.path.isfile(test_path) and os.path.getsize(test_path) > 0:
+                    final_path = test_path
+                    break
 
-async def proxy_get(
-    path: str,
-    request: Request,
-    timeout: float = 60.0,
-):
+            if not (os.path.isfile(final_path) and os.path.getsize(final_path) > 0):  
+                raise RuntimeError("Downloaded file not found or is empty.")  
 
-    backend = get_backend_url()
+            logger.info(f"Successfully downloaded video: {final_path}")  
 
-    target = (
-        f"{backend}/"
-        f"{path.lstrip('/')}"
-    )
+            response_data = {  
+                "status": True,  
+                "title": info.get("title", ""),  
+                "thumbnail": info.get("thumbnail", ""),  
+                "filename": os.path.basename(final_path),  
+                "path": final_path,  
+                "download_url": f"/files/{os.path.basename(final_path)}",  
+                "duration": info.get("duration", 0),  
+                "videoId": info.get("id"),  
+                "uploader": info.get("uploader"),  
+                "filesize": os.path.getsize(final_path)  
+            }
 
-    params = list(
-        request
-        .query_params
-        .multi_items()
-    )
+            save_cached_metadata(response_data, "mp4")
+            return response_data
 
-    try:
+    except yt_dlp.utils.DownloadError as e:  
+        logger.error(f"yt-dlp error downloading video for {url}: {e}")  
+        raise RuntimeError(f"Download Error: {str(e)}")  
+    except Exception as e:  
+        logger.error(f"Unexpected error downloading video for {url}: {e}")  
+        raise RuntimeError(f"Internal Server Error: {str(e)}")
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                timeout,
-                connect=30.0,
-            ),
-            follow_redirects=True,
-        ) as client:
+# ---------------------------------------------------------
+# API ROUTES
+# ---------------------------------------------------------
 
-            response = await client.get(
-                target,
-                params=params,
-            )
+@app.get("/")
+async def root():
+    return {
+        "name": "MAGMA Music API",
+        "version": "2.2.0-Production",
+        "status": "online"
+    }
 
-        content_type = response.headers.get(
-            "content-type",
-            "application/octet-stream",
-        )
-
-        headers = {}
-
-        for name in (
-            "content-disposition",
-            "cache-control",
-            "etag",
-            "last-modified",
-            "accept-ranges",
-        ):
-
-            if name in response.headers:
-
-                headers[name] = (
-                    response.headers[name]
-                )
-
-        media_type = (
-            content_type.split(";")[0]
-        )
-
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            media_type=media_type,
-            headers=headers,
-        )
-
-    except httpx.TimeoutException:
-
-        return JSONResponse(
-
-            {
-                "status":
-                    "error",
-
-                "error":
-                    "Backend request timed out",
-
-                "backend":
-                    backend,
-            },
-
-            status_code=504,
-        )
-
-    except Exception as error:
-
-        return JSONResponse(
-
-            {
-                "status":
-                    "error",
-
-                "error":
-                    str(error),
-
-                "backend":
-                    backend,
-            },
-
-            status_code=502,
-        )
-
-
-# ============================================================
-# SEARCH
-# ============================================================
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "version": "2.2.0",
+        "yt_dlp_version": yt_dlp.version.__version__,
+        "cache_expiry_hours": CACHE_EXPIRE_HOURS
+    }
 
 @app.get("/search")
-async def search(
-    request: Request,
-    q: str = Query(
-        ...,
-        min_length=1,
-    ),
+async def search_youtube_music(
+    q: str = Query(..., description="Search query"),
+    limit: int = Query(1, description="Number of results to return (max 20)")
 ):
+    try:
+        logger.info(f"Received search request for query '{q}' with limit {limit}")
+        actual_limit = min(max(1, limit), 20)  
 
-    return await proxy_get(
-        "/search",
-        request,
-        timeout=30,
-    )
+        def perform_search():  
+            return ytmusic.search(q, filter="songs", limit=actual_limit)  
 
+        results = await asyncio.to_thread(perform_search)  
 
-# ============================================================
-# THUMBNAIL
-# ============================================================
+        formatted_results = []  
+        for r in results:  
+            artists = ", ".join([a.get("name", "") for a in r.get("artists", [])])  
+            thumbnails = r.get("thumbnails", [])  
+            thumbnail_url = thumbnails[-1].get("url") if thumbnails else None  
+
+            formatted_results.append({  
+                "title": r.get("title"),  
+                "artist": artists,  
+                "videoId": r.get("videoId"),  
+                "duration": r.get("duration"),  
+                "thumbnail": thumbnail_url  
+            })  
+
+        logger.info(f"Successfully completed search for query '{q}', returned {len(formatted_results)} result(s)")  
+
+        if actual_limit == 1:  
+            return formatted_results[0] if formatted_results else {}  
+
+        return formatted_results  
+    except Exception as e:  
+        logger.error(f"Search error for query '{q}': {e}")  
+        raise HTTPException(status_code=500, detail={"error": "Search failed", "message": str(e)})
 
 @app.get("/thumbnail")
-async def thumbnail(
-    request: Request,
-):
-
-    return await proxy_get(
-        "/thumbnail",
-        request,
-        timeout=30,
-    )
-
-
-# ============================================================
-# AUDIO DOWNLOAD
-# ============================================================
+async def get_thumbnail(url: str = Query(..., description="YouTube URL")):
+    try:
+        result = await asyncio.to_thread(fetch_thumbnail_sync, url)
+        return result
+    except Exception as e:
+        logger.error(f"Thumbnail API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Failed to fetch thumbnail", "message": str(e)})
 
 @app.get("/download")
-async def download(
-    request: Request,
-):
-
-    return await proxy_get(
-        "/download",
-        request,
-        timeout=300,
-    )
-
-
-# ============================================================
-# VIDEO
-# ============================================================
+async def download_audio(url: str = Query(..., description="YouTube URL")):
+    try:
+        result = await asyncio.to_thread(download_audio_sync, url)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Audio download API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Audio download failed", "message": str(e)})
 
 @app.get("/video")
-async def video(
-    request: Request,
-):
-
-    return await proxy_get(
-        "/video",
-        request,
-        timeout=300,
-    )
-
-
-# ============================================================
-# FILES
-# ============================================================
-
-@app.get(
-    "/files/{filename:path}"
-)
-async def files(
-    request: Request,
-    filename: str,
-):
-
-    safe_filename = Path(
-        filename
-    ).name
-
-    return await proxy_get(
-        f"/files/{safe_filename}",
-        request,
-        timeout=120,
-    )
-
-
-# ============================================================
-# CATCH-ALL PROXY
-# ============================================================
-#
-# Upar defined routes ke alawa jo bhi endpoint aayega,
-# woh automatically backend ko forward hoga.
-#
-# /abc
-#   ↓
-# backend /abc
-#
-# /api/test
-#   ↓
-# backend /api/test
-#
-# /anything?q=hello
-#   ↓
-# backend /anything?q=hello
-#
-# ============================================================
-
-@app.api_route(
-    "/{path:path}",
-    methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-)
-async def catch_all_proxy(
-    path: str,
-    request: Request,
-):
-
-    backend = get_backend_url()
-
-
-    # ========================================================
-    # TARGET URL
-    # ========================================================
-
-    if path:
-
-        target_url = (
-            f"{backend}/{path}"
-        )
-
-    else:
-
-        target_url = backend
-
-
-    # ========================================================
-    # QUERY PARAMETERS
-    # ========================================================
-
-    params = list(
-        request
-        .query_params
-        .multi_items()
-    )
-
-
-    # ========================================================
-    # REQUEST BODY
-    # ========================================================
-
-    body = await request.body()
-
-
-    # ========================================================
-    # REQUEST HEADERS
-    # ========================================================
-
-    headers = dict(
-        request.headers
-    )
-
-    headers.pop(
-        "host",
-        None
-    )
-
-    headers.pop(
-        "content-length",
-        None
-    )
-
-
-    # ========================================================
-    # FORWARD TO BACKEND
-    # ========================================================
-
+async def download_video(url: str = Query(..., description="YouTube URL")):
     try:
+        result = await asyncio.to_thread(download_video_sync, url)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Video download API error: {e}")
+        raise HTTPException(status_code=500, detail={"error": "Video download failed", "message": str(e)})
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                300.0,
-                connect=30.0,
-            ),
-            follow_redirects=True,
-        ) as client:
-
-            backend_response = (
-                await client.request(
-
-                    method=request.method,
-
-                    url=target_url,
-
-                    params=params,
-
-                    content=body,
-
-                    headers=headers,
-
-                )
-            )
-
-
-        # ====================================================
-        # RESPONSE HEADERS
-        # ====================================================
-
-        response_headers = {}
-
-        for header in [
-
-            "content-type",
-
-            "content-disposition",
-
-            "cache-control",
-
-            "etag",
-
-            "last-modified",
-
-            "accept-ranges",
-
-        ]:
-
-            if header in backend_response.headers:
-
-                response_headers[header] = (
-                    backend_response
-                    .headers[header]
-                )
-
-
-        # ====================================================
-        # RETURN BACKEND RESPONSE
-        # ====================================================
-
-        return Response(
-
-            content=(
-                backend_response
-                .content
-            ),
-
-            status_code=(
-                backend_response
-                .status_code
-            ),
-
-            headers=response_headers,
-
-        )
-
-
-    # ========================================================
-    # TIMEOUT
-    # ========================================================
-
-    except httpx.TimeoutException:
-
-        return JSONResponse(
-
-            {
-                "status":
-                    "error",
-
-                "error":
-                    "Backend request timed out",
-
-                "backend":
-                    backend,
-            },
-
-            status_code=504,
-        )
-
-
-    # ========================================================
-    # HTTPX ERROR
-    # ========================================================
-
-    except httpx.HTTPError as error:
-
-        return JSONResponse(
-
-            {
-                "status":
-                    "error",
-
-                "error":
-                    str(error),
-
-                "backend":
-                    backend,
-            },
-
-            status_code=502,
-        )
-
-
-    # ========================================================
-    # OTHER ERROR
-    # ========================================================
-
-    except Exception as error:
-
-        return JSONResponse(
-
-            {
-                "status":
-                    "error",
-
-                "error":
-                    str(error),
-
-                "backend":
-                    backend,
-            },
-
-            status_code=502,
-        )
-
-
-# ============================================================
-# LOCAL RUN
-# ============================================================
+@app.get("/files/{filename}")
+async def get_file(filename: str):
+    filename = os.path.basename(filename)
+    file_path = os.path.join(DOWNLOAD_DIR, filename)
+    if not os.path.isfile(file_path):
+        logger.warning(f"Requested file not found: {filename}")
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path=file_path, filename=filename)
 
 if __name__ == "__main__":
-
     import uvicorn
-
-    uvicorn.run(
-
-        app,
-
-        host="0.0.0.0",
-
-        port=int(
-            os.getenv(
-                "PORT",
-                "8000",
-            )
-        ),
-
-    )
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
